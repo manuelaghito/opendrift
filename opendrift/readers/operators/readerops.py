@@ -27,6 +27,11 @@ class Combined(BaseReader):
         self.start_time = none_or_cmp(self.a.start_time, self.b.start_time, max)
         self.end_time = none_or_cmp(self.a.end_time, self.b.end_time, min)
 
+        self.xmin = -180
+        self.xmax = 180
+        self.ymin = -90
+        self.ymax = 90
+
         self.name = f'Combined({a.name} | {b.name})'
 
         self.proj4 = '+proj=latlong'
@@ -46,7 +51,7 @@ class Combined(BaseReader):
         env_b, env_profiles_b = self.b.get_variables_interpolated(variables, *args, **kwargs)
 
         variables = [
-            var for var in env_a.keys() if var not in ['x', 'y', 'time']
+            var for var in env_a.keys() if var not in ['x', 'y', 'z', 'time']
         ]
 
         for var in variables:
@@ -54,7 +59,7 @@ class Combined(BaseReader):
 
         if env_profiles_a is not None:
             variables = [
-                var for var in env_profiles_a.keys() if var not in ['x', 'y', 'time']
+                var for var in env_profiles_a.keys() if var not in ['x', 'y', 'z', 'time']
             ]
             for var in variables:
                 env_profiles_a[var] = self.op(env_profiles_a[var], env_profiles_b[var])
