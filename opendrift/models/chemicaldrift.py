@@ -90,65 +90,38 @@ class ChemicalDrift(OceanDrift):
     """
 
     ElementType = Chemical
-    '''
-    The following choice of reaction mode must be done to save memory if "OverallRateConstants" is selected, so that the model does not save unrequired variables 
+
     
-    '''
-    Reaction_mode = "OverallRateConstants"  # This must be specified by commenting one of these two choices
-    
-    # Reaction_mode = "SingleRateConstants"
-    
-    if Reaction_mode == "OverallRateConstants":
-   
-        required_variables = {
-            'x_sea_water_velocity': {'fallback': None},
-            'y_sea_water_velocity': {'fallback': None},
-            'x_wind': {'fallback': 0},
-            'y_wind': {'fallback': 0},
-            'land_binary_mask': {'fallback': None},
-            'sea_floor_depth_below_sea_level': {'fallback': None},
-            'ocean_vertical_diffusivity': {'fallback': 0.0001, 'profiles': True},
-            'sea_water_temperature': {'fallback': 10, 'profiles': True},
-            'sea_water_salinity': {'fallback': 34, 'profiles': True},
-            'upward_sea_water_velocity': {'fallback': 0},
-            #'conc3': {'fallback': 1.e-3},
-            'spm': {'fallback': 50},
-            'ocean_mixed_layer_thickness': {'fallback': 30},
-            'active_sediment_layer_thickness': {'fallback': 0.03}, # TODO - currently not used, redundant with 'chemical:sediment:mixing_depth'
-            'doc': {'fallback': 0.0},
-                    
-            }
-        
-    elif Reaction_mode == "SingleRateConstants":
-       required_variables = {
-           'x_sea_water_velocity': {'fallback': None},
-           'y_sea_water_velocity': {'fallback': None},
-           'x_wind': {'fallback': 0},
-           'y_wind': {'fallback': 0},
-           'land_binary_mask': {'fallback': None},
-           'sea_floor_depth_below_sea_level': {'fallback': None},
-           'ocean_vertical_diffusivity': {'fallback': 0.0001, 'profiles': True},
-           'sea_water_temperature': {'fallback': 10, 'profiles': True},
-           'sea_water_salinity': {'fallback': 34, 'profiles': True},
-           'upward_sea_water_velocity': {'fallback': 0},
-           #'conc3': {'fallback': 1.e-3},
-           'spm': {'fallback': 50},
-           'ocean_mixed_layer_thickness': {'fallback': 30},
-           'active_sediment_layer_thickness': {'fallback': 0.03}, # TODO - currently not used, redundant with 'chemical:sediment:mixing_depth'
-           'doc': {'fallback': 0.0},
-           # Variables for dissociation and single process degradation
-           'sea_water_ph_reported_on_total_scale':{'fallback': 8.1, 'profiles': True}, # water_pH from CMENS with standard name # DONE
-           'pH_sediment':{'fallback': 6.9, 'profiles': False}, # supplied by the user, with pH_sediment as standard name # DONE
-           'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water':{'fallback': 7.25, 'profiles': True}, # in g/m3 or mg/L from CMENS with standard name
-           'mole_concentration_of_dissolved_inorganic_carbon_in_sea_water':{'fallback': 104, 'profiles': True}, # in concentration of carbon in the water (Conc_C) in mol/m3, nedded as ueq/L (conversion: 22.73 ueq/mg_C, MW_C = 12.01 g/mol. # DONE
-           # From concentration of carbon in the water (Conc_C) in mol/m3: Conc_CO2 = ((Conc_C*MW_C)*1000)*22.73*1000; 
-           # from mol_C/m3, *12.01 g_C/mol = g_C/m3, *1000 = mg/m3, * 22.73 ueq/mg = ueq/m3, *1000 = ueq/L
-           # default from https://www.soest.hawaii.edu/oceanography/faculty/zeebe_files/Publications/ZeebeWolfEnclp07.pdf, 2.3 mmol/kg
-           
-           'solar_irradiance':{'fallback': 241}, # Available in W/m2, in the function it is nedded in Ly/day. TO DO Check UM of input for convertion. 1 Ly = 41868 J/m2 -> 1 Ly/day =  41868 J/m2 / 86400 s = 0.4843 W/m2  # DONE
-           'mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water':{'fallback': 0, 'profiles': True} # in mmol_carbon/m3 for CMENS. # TO DO *1e-6 to convert into mol/L. #  Concentration of phytoplankton as “mmol/m3 of phytoplankton expressed as carbon” 
-                  
-           }
+
+    required_variables = {
+     'x_sea_water_velocity': {'fallback': None},
+     'y_sea_water_velocity': {'fallback': None},
+     'x_wind': {'fallback': 0},
+     'y_wind': {'fallback': 0},
+     'land_binary_mask': {'fallback': None},
+     'sea_floor_depth_below_sea_level': {'fallback': None},
+     'ocean_vertical_diffusivity': {'fallback': 0.0001, 'profiles': True},
+     'sea_water_temperature': {'fallback': 10, 'profiles': True},
+     'sea_water_salinity': {'fallback': 34, 'profiles': True},
+     'upward_sea_water_velocity': {'fallback': 0},
+     #'conc3': {'fallback': 1.e-3},
+     'spm': {'fallback': 50},
+     'ocean_mixed_layer_thickness': {'fallback': 30},
+     'active_sediment_layer_thickness': {'fallback': 0.03}, # TODO - currently not used, redundant with 'chemical:sediment:mixing_depth'
+     'doc': {'fallback': 0.0},
+     # Variables for dissociation and single process degradation
+     'sea_water_ph_reported_on_total_scale':{'fallback': 8.1, 'profiles': True}, # water_pH from CMENS with standard name # DONE
+     'pH_sediment':{'fallback': 6.9, 'profiles': False}, # supplied by the user, with pH_sediment as standard name # DONE
+     'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water':{'fallback': 7.25, 'profiles': True}, # in g/m3 or mg/L from CMENS with standard name
+     'mole_concentration_of_dissolved_inorganic_carbon_in_sea_water':{'fallback': 104, 'profiles': True}, # in concentration of carbon in the water (Conc_C) in mol/m3, nedded as ueq/L (conversion: 22.73 ueq/mg_C, MW_C = 12.01 g/mol. # DONE
+     # From concentration of carbon in the water (Conc_C) in mol/m3: Conc_CO2 = ((Conc_C*MW_C)*1000)*22.73*1000; 
+     # from mol_C/m3, *12.01 g_C/mol = g_C/m3, *1000 = mg/m3, * 22.73 ueq/mg = ueq/m3, *1000 = ueq/L
+     # default from https://www.soest.hawaii.edu/oceanography/faculty/zeebe_files/Publications/ZeebeWolfEnclp07.pdf, 2.3 mmol/kg
+     
+     'solar_irradiance':{'fallback': 241}, # Available in W/m2, in the function it is nedded in Ly/day. TO DO Check UM of input for convertion. 1 Ly = 41868 J/m2 -> 1 Ly/day =  41868 J/m2 / 86400 s = 0.4843 W/m2  # DONE
+     'mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water':{'fallback': 0, 'profiles': True} # in mmol_carbon/m3 for CMENS. # TO DO *1e-6 to convert into mol/L. #  Concentration of phytoplankton as “mmol/m3 of phytoplankton expressed as carbon” 
+            
+     }
     
    
     
