@@ -392,6 +392,13 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                     'previous means that objects will move back to the previous location '
                     'if they hit land'
             },
+            'general:coastline_at_end': {
+                'type': 'bool',
+                'default': True,
+                'level': CONFIG_LEVEL_BASIC,
+                'description': 'If True, apply general:coastline_action at the end of the simulation.'
+                    'Set False for intermediate runs that will be saved and restarted in a new simulation.'
+            },
             'general:coastline_approximation_precision': {
                 'type': 'float',
                 'default': 0.001,
@@ -2319,7 +2326,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         self.timer_start('cleaning up')
         logger.debug('Cleaning up')
 
-        self.interact_with_coastline(final=True)
+        if self.get_config('general:coastline_at_end'):
+            self.interact_with_coastline(final=True)
         self.timer_end('cleaning up')
         self.timer_end('total time')
         self.state_to_buffer(final=True)  # Append final status to buffer
