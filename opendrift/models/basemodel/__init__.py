@@ -2152,9 +2152,21 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             ('land_binary_mask' in self.required_variables):
             #('land_binary_mask' not in self.fallback_values) and \
             self.timer_start('preparing main loop:moving elements to ocean')
-            self.elements_scheduled.lon, self.elements_scheduled.lat, land_indices = \
-                self.closest_ocean_points(self.elements_scheduled.lon,
-                                          self.elements_scheduled.lat)
+            # After a restart (seed_from_file / seed_from_dataset / ...), elements seeded from
+            # a previous run must keep their saved lon/lat to preserve their original trajectory.
+
+            # New seeds are identified by age_seconds <= 0 (or missing, non-finite)
+            age = np.asarray(getattr(
+                self.elements_scheduled, 'age_seconds',
+                np.zeros(self.num_elements_scheduled())))
+            newseed = ~np.isfinite(age) | (age <= 0)
+
+            # Move only newly seeded particles on land to ocean
+            if np.any(newseed):
+                self.elements_scheduled.lon[newseed], self.elements_scheduled.lat[newseed], _ = \
+                    self.closest_ocean_points(
+                        self.elements_scheduled.lon[newseed],
+                        self.elements_scheduled.lat[newseed])
             self.timer_end('preparing main loop:moving elements to ocean')
 
 
