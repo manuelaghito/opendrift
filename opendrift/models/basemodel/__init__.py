@@ -395,7 +395,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             'general:coastline_at_end': {
                 'type': 'bool',
                 'default': True,
-                'level': CONFIG_LEVEL_BASIC,
+                'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'If True, apply general:coastline_action at the end of the simulation.'
                     'Set False for intermediate runs that will be saved and restarted in a new simulation.'
             },
