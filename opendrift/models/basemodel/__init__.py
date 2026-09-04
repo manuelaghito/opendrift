@@ -95,10 +95,10 @@ def coastline_crossing(lon1, lat1, lon2, lat2, step_degrees, land_side=True):
             Last position in water (if land_side is False) or first position on land (if land_side is True (default)) along transect
     """
 
-    lon1 = np.atleast_1d(lon1)
-    lat1 = np.atleast_1d(lat1)
-    lon2 = np.atleast_1d(lon2)
-    lat2 = np.atleast_1d(lat2)
+    lon1 = np.atleast_1d(np.asarray(lon1, dtype=float))
+    lat1 = np.atleast_1d(np.asarray(lat1, dtype=float))
+    lon2 = np.atleast_1d(np.asarray(lon2, dtype=float))
+    lat2 = np.atleast_1d(np.asarray(lat2, dtype=float))
     if land_side is True:
         lon_c = lon2
         lat_c = lat2
