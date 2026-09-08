@@ -496,7 +496,7 @@ class Reader(StructuredReader):
 
         # Find depth levels covering all elements
         if z.min() == 0 or self.hc is None:
-            indz = self.num_layers - 1  # surface layer
+            inds = self.num_layers - 1  # surface layer
             variables['z'] = 0
 
         else:
@@ -541,17 +541,17 @@ class Reader(StructuredReader):
             indy_el = np.clip(indy_el - indy.min(), 0, z_rho.shape[1]-1)
 
             # Loop to find the layers covering the requested z-values
-            indz_min = 0
-            indz_max = self.num_layers
+            inds_min = 0
+            inds_max = self.num_layers
             for i in range(self.num_layers):
                 if np.min(z-z_rho[i, indy_el, indx_el]) > 0:
-                    indz_min = i
+                    inds_min = i
                 if np.max(z-z_rho[i, indy_el, indx_el]) > 0:
-                    indz_max = i
-            indz = range(np.maximum(0, indz_min-self.verticalbuffer),
+                    inds_max = i
+            inds = range(np.maximum(0, inds_min-self.verticalbuffer),
                          np.minimum(self.num_layers,
-                                    indz_max + 1 + self.verticalbuffer))
-            z_rho = z_rho[indz, :, :]
+                                    inds_max + 1 + self.verticalbuffer))
+            z_rho = z_rho[inds, :, :]
             # Determine the z-levels to which to interpolate
             zi1 = np.maximum(0, bisect_left(-np.array(self.zlevels),
                                             -z.max()) - self.verticalbuffer)
@@ -561,7 +561,7 @@ class Reader(StructuredReader):
             variables['z'] = np.array(self.zlevels[zi1:zi2])
         
         # define another set of indices
-        itzxy = (indxTime, indz, indy, indx)
+        itsxy = (indxTime, inds, indy, indx)
             
         def get_mask(mask_name, imask, masks_store):
             if mask_name in masks_store:
@@ -584,7 +584,7 @@ class Reader(StructuredReader):
             elif var.ndim == 3:
                 variables[par] = var[itxy]
             elif var.ndim == 4:
-                variables[par] = var[itzxy]
+                variables[par] = var[itsxy]
             else:
                 raise Exception('Wrong dimension of variable: ' +
                                 self.ROMS_variable_mapping[par])
@@ -616,7 +616,7 @@ class Reader(StructuredReader):
 
             if var.ndim == 4:
                 # Regrid from sigma to z levels
-                if len(np.atleast_1d(indz)) > 1:
+                if len(np.atleast_1d(inds)) > 1:
                     logger.debug('sigma to z for ' + varname)
                     if self.precalculate_s2z_coefficients is True:
                         M = self.sea_floor_depth_below_sea_level.shape[0]
