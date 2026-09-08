@@ -95,10 +95,10 @@ def coastline_crossing(lon1, lat1, lon2, lat2, step_degrees, land_side=True):
             Last position in water (if land_side is False) or first position on land (if land_side is True (default)) along transect
     """
 
-    lon1 = np.atleast_1d(lon1)
-    lat1 = np.atleast_1d(lat1)
-    lon2 = np.atleast_1d(lon2)
-    lat2 = np.atleast_1d(lat2)
+    lon1 = np.atleast_1d(np.asarray(lon1, dtype=float))
+    lat1 = np.atleast_1d(np.asarray(lat1, dtype=float))
+    lon2 = np.atleast_1d(np.asarray(lon2, dtype=float))
+    lat2 = np.atleast_1d(np.asarray(lat2, dtype=float))
     if land_side is True:
         lon_c = lon2
         lat_c = lat2
@@ -391,6 +391,13 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                     'stranding means that objects are deactivated if they hit land. '
                     'previous means that objects will move back to the previous location '
                     'if they hit land'
+            },
+            'general:coastline_at_end': {
+                'type': 'bool',
+                'default': True,
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'If True, apply general:coastline_action at the end of the simulation.'
+                    'Set False for intermediate runs that will be saved and restarted in a new simulation.'
             },
             'general:coastline_approximation_precision': {
                 'type': 'float',
@@ -2152,9 +2159,26 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             ('land_binary_mask' in self.required_variables):
             #('land_binary_mask' not in self.fallback_values) and \
             self.timer_start('preparing main loop:moving elements to ocean')
-            self.elements_scheduled.lon, self.elements_scheduled.lat, land_indices = \
-                self.closest_ocean_points(self.elements_scheduled.lon,
-                                          self.elements_scheduled.lat)
+            # After a restart (seed_from_file / seed_from_dataset / ...), elements seeded from
+            # a previous run must keep their saved lon/lat to preserve their original trajectory.
+
+            # New seeds are identified by age_seconds <= 0 (or missing, non-finite)
+            age = np.asarray(getattr(
+                self.elements_scheduled, 'age_seconds',
+                np.zeros(self.num_elements_scheduled())))
+            newseed = ~np.isfinite(age) | (age <= 0)
+            
+            # Move only newly seeded particles on land to ocean
+            lon = np.array(self.elements_scheduled.lon, copy=True, dtype=float)
+            lat = np.array(self.elements_scheduled.lat, copy=True, dtype=float)
+            orig_lon, orig_lat = lon.copy(), lat.copy()
+            
+            lon, lat, _ = self.closest_ocean_points(lon, lat)
+            if np.any(~newseed):
+                lon[~newseed] = orig_lon[~newseed]
+                lat[~newseed] = orig_lat[~newseed]
+            self.elements_scheduled.lon = lon
+            self.elements_scheduled.lat = lat
             self.timer_end('preparing main loop:moving elements to ocean')
 
 
@@ -2307,7 +2331,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         self.timer_start('cleaning up')
         logger.debug('Cleaning up')
 
-        self.interact_with_coastline(final=True)
+        if self.get_config('general:coastline_at_end'):
+            self.interact_with_coastline(final=True)
         self.timer_end('cleaning up')
         self.timer_end('total time')
         self.state_to_buffer(final=True)  # Append final status to buffer
