@@ -15,7 +15,9 @@
 # Copyright 2015, Knut-Frode Dagestad, MET Norway
 
 from bisect import bisect_left, bisect_right
-from datetime import datetime
+from datetime import datetime, timedelta
+import glob as glob_module
+import os
 import logging
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,13 @@ class Reader(StructuredReader):
 
         :param destagger_velocity: Average u/v from their staggered grid points onto the rho grid.
         :type destagger_velocity: bool
+
+        :param time_buffer: If set (timedelta, hours as float, or '48h'/'2d'), only
+            open multi-file ROMS his files overlapping
+            [time - time_buffer, time + time_buffer]. Full timeline is still
+            catalogued for coverage; files are swapped as the simulation advances.
+            Ignored for a single file or xr.Dataset source.
+        :type time_buffer: datetime.timedelta, float, str, optional
 
     Example:
 
@@ -86,7 +95,7 @@ class Reader(StructuredReader):
 
     def __init__(self, filename=None, name=None, gridfile=None, standard_name_mapping={},
                  save_interpolator=False, interpolator_filename=None,
-                 destagger_velocity=False):
+                 destagger_velocity=False, time_buffer=None):
         
         self.destagger_velocity = destagger_velocity
         self._mask_rho = None
@@ -99,6 +108,18 @@ class Reader(StructuredReader):
         self.z_rho_tot = None
         self.s2z_A = None
         self.hc = None
+        # Lazy multi-file windowing (optional). When set, only his files
+        # overlapping [time - time_buffer, time + time_buffer] stay open.
+        self.time_buffer = self._normalize_time_buffer(time_buffer)
+        self._lazy_files = False
+        self._file_catalog = None  # list[(path, t0, t1, times)]
+        self._loaded_files = None
+        self._loaded_times = None
+        self._window_start = None
+        self._window_end = None
+        self._gridfile = gridfile
+        self._filename_source = filename
+        self._drop_non_essential_vars_pop = None
 
         if filename is None:
             raise ValueError('Need filename as argument to constructor')
@@ -157,32 +178,42 @@ class Reader(StructuredReader):
             logger.debug('Dropping variables: %s' % dropvars)
             ds = ds.drop_vars(dropvars)
             return ds
-        self.Dataset = open_dataset_opendrift(source=filename,
-            open_mfdataset_options={'chunks': {'ocean_time': 1},
-                                    'preprocess': drop_non_essential_vars_pop})
+        # Keep preprocess off the stored options dict: OpenDrift's
+        # test_lazy_reader compares Reader.__dict__ entries of type dict
+        # by equality, and nested local-function identity would fail.
+        self._drop_non_essential_vars_pop = drop_non_essential_vars_pop
+        self._open_mfdataset_options = {'chunks': {'ocean_time': 1}}
 
         # this is an opporunity to save interpolators to pickle to save sim time
         self.save_interpolator = save_interpolator
         self.interpolator_filename = interpolator_filename or f'{self.name}_interpolators'
 
-        if gridfile is not None:  # Merging gridfile dataset with main dataset
-            gf = xr.open_dataset(gridfile)
-            for var in gf:
-                if var in self.Dataset:
-                    logger.warning(f'Skipping duplicate variable {var} from grdfile')
-                    gf = gf.drop_vars(var)
-            self.Dataset = xr.merge([self.Dataset, gf], compat='override')
+        sources = self._expand_sources(filename)
+        if self.time_buffer is not None and len(sources) > 1:
+            self._lazy_files = True
+            logger.info(
+                f'ROMS lazy file window enabled: time_buffer={self.time_buffer}, '
+                f'n_files={len(sources)}'
+            )
+            self._file_catalog = self._build_file_catalog(sources)
+            # Full timeline for OpenDrift coverage / nearest_time
+            all_times = []
+            for _path, _f0, _f1, times in self._file_catalog:
+                all_times.extend(times)
+            all_times = sorted(set(all_times))
+            self._all_times = all_times
+            # Open initial window around the first available time
+            self._open_time_window(all_times[0])
+        else:
+            if self.time_buffer is not None and len(sources) <= 1:
+                logger.info('time_buffer ignored (single file/Dataset source)')
+            self.Dataset = open_dataset_opendrift(
+                source=filename,
+                open_mfdataset_options=self._mfdataset_options(),
+            )
+            self._merge_gridfile()
 
-        for var in self.Dataset:  # Check for mis-named Croco-dimensions
-            dims = self.Dataset[var].dims
-            if 'eta_rho' in dims and 'xi_u' in dims:
-                logger.warning(f'Wrongly named dimensions of {var} in Croco output: ' +
-                               'Renaming dimensions (eta_rho, xi_u) to (eta_u, xi_u)')
-                self.Dataset[var] = self.Dataset[var].rename({'eta_rho': 'eta_u'})
-            elif 'eta_v' in dims and 'xi_rho' in dims:
-                logger.warning(f'Wrongly named dimensions of {var} in Croco output: ' +
-                               'Renaming dimensions (eta_v, xi_rho) to (eta_v, xi_v)')
-                self.Dataset[var] = self.Dataset[var].rename({'xi_rho': 'xi_v'})
+        self._rename_croco_dimensions()
 
         if 'Vtransform' in self.Dataset.variables:
             self.Vtransform = self.Dataset.variables['Vtransform'].data  # scalar
@@ -262,25 +293,16 @@ class Reader(StructuredReader):
                 del self.ROMS_variable_mapping[var]
 
         # Get time coverage
-        ocean_time = None
-        for tv in ['ocean_time', 'time', 'bulk_time']:
-            if tv in self.Dataset.variables:
-                ocean_time = self.Dataset.variables[tv]
-        if ocean_time is None:
-            raise ValueError('Time variable not found in ROMS file')
-        if np.issubdtype(ocean_time.dtype, np.datetime64):
-            self.times = pd.to_datetime(ocean_time).to_pydatetime()
-        else:  # We must decode manually - necessary hack for ROMS-Croco since not CF compatible
-            time_units = ocean_time.attrs['units']
-            if time_units == 'second':
-                logger.info('Ocean time given as seconds relative to start '
-                            'Setting artifical start time of 1 Jan 2000.')
-                time_units = 'seconds since 2000-01-01 00:00:00'
-            if time_units == 'days':
-                logger.info('Ocean time given as days relative to start '
-                            'Setting artifical start time of 1 Jan 2000.')
-                time_units = 'days since 2000-01-01 00:00:00'
-            self.times = num2date(ocean_time[:], time_units)
+        if self._lazy_files:
+            self.times = list(self._all_times)
+        else:
+            ocean_time = None
+            for tv in ['ocean_time', 'time', 'bulk_time']:
+                if tv in self.Dataset.variables:
+                    ocean_time = self.Dataset.variables[tv]
+            if ocean_time is None:
+                raise ValueError('Time variable not found in ROMS file')
+            self.times = self._decode_ocean_time(ocean_time)
         self.start_time = self.times[0]
         self.end_time = self.times[-1]
         if len(self.times) > 1:
@@ -288,6 +310,8 @@ class Reader(StructuredReader):
         else:
             self.time_step = None
 
+        # s2z weights (s2z_A, s2z_C). Default True = whole-domain table
+        # (stock OpenDrift). False: recompute on the fetched block every call.
         self.precalculate_s2z_coefficients = True
 
         # Find all variables having standard_name
@@ -441,21 +465,432 @@ class Reader(StructuredReader):
                 raise ValueError('No angle between xi and east found')
         return self._angle
 
-    def _ensure_s2z_coefficients(self):
-        """Whole-domain s2z A,C from multi_zslice, once per Dataset."""
-        if self.s2z_A is not None:
+
+    @staticmethod
+    def _normalize_time_buffer(time_buffer):
+        """Accept timedelta, hours (int/float), or strings like ``'48h'`` / ``'2d'``.
+
+        Returns a positive ``timedelta``, or ``None`` if ``time_buffer`` is None.
+        """
+        if time_buffer is None:
+            return None
+        if isinstance(time_buffer, timedelta):
+            if time_buffer.total_seconds() <= 0:
+                raise ValueError('time_buffer must be positive')
+            return time_buffer
+        if isinstance(time_buffer, (int, float)):
+            if time_buffer <= 0:
+                raise ValueError('time_buffer must be positive')
+            return timedelta(hours=float(time_buffer))
+        if isinstance(time_buffer, str):
+            s = time_buffer.strip().lower()
+            if s.endswith('h'):
+                return timedelta(hours=float(s[:-1]))
+            if s.endswith('d'):
+                return timedelta(days=float(s[:-1]))
+            return timedelta(hours=float(s))
+        raise TypeError(f'Unsupported time_buffer type: {type(time_buffer)}')
+
+    @staticmethod
+    def _expand_sources(filename):
+        """Turn filename / glob / list / Dataset into a flat source list.
+
+        Used to decide whether lazy ``time_buffer`` mode applies (needs more
+        than one file path). Globs are expanded and sorted.
+        """
+        if isinstance(filename, xr.Dataset):
+            return [filename]
+        if isinstance(filename, (list, tuple)):
+            return list(filename)
+        if isinstance(filename, str) and any(ch in filename for ch in '*?['):
+            return sorted(glob_module.glob(filename))
+        return [filename]
+
+    @staticmethod
+    def _is_remote_source(path):
+        """True for THREDDS / OPeNDAP / HTTP(S) URLs (not local files).
+
+        Remote sources skip the on-disk time-index cache and are catalogued
+        sequentially (OPeNDAP is not process-pool friendly).
+        """
+        if not isinstance(path, str):
+            return False
+        p = path.strip().lower()
+        if p.startswith('file://'):
+            return False
+        return (
+            p.startswith('http://')
+            or p.startswith('https://')
+            or p.startswith('dods://')
+            or p.startswith('dap://')
+            or p.startswith('opendap://')
+        )
+
+    @staticmethod
+    def _times_to_pydatetime(vals):
+        """Normalize netCDF/xarray/cftime time values to a list of datetime."""
+        if np.ndim(vals) == 0:
+            vals = [vals.item() if hasattr(vals, 'item') else vals]
+        else:
+            vals = list(vals)
+        out = []
+        for t in vals:
+            if isinstance(t, datetime):
+                out.append(t)
+            elif hasattr(t, 'year') and hasattr(t, 'month'):
+                # cftime -> datetime (ROMS usually standard calendar)
+                try:
+                    out.append(datetime(
+                        int(t.year), int(t.month), int(t.day),
+                        int(getattr(t, 'hour', 0)),
+                        int(getattr(t, 'minute', 0)),
+                        int(getattr(t, 'second', 0)),
+                    ))
+                except Exception:
+                    out.append(pd.Timestamp(str(t)).to_pydatetime())
+            else:
+                out.append(pd.Timestamp(t).to_pydatetime())
+        return out
+
+    @staticmethod
+    def _read_file_times_xarray(path):
+        """Read ocean_time/time/bulk_time via xarray (remote / OPeNDAP)."""
+        with xr.open_dataset(path, decode_times=True) as ds:
+            for tv in ['ocean_time', 'time', 'bulk_time']:
+                if tv in ds.variables:
+                    vals = pd.to_datetime(ds[tv].values).to_pydatetime()
+                    return Reader._times_to_pydatetime(vals)
+        raise ValueError(f'No time variable in {path}')
+
+    @staticmethod
+    def _read_file_times_netcdf4(path):
+        """Read only the time variable from a local NetCDF file (lightweight)."""
+        from netCDF4 import Dataset as NCDataset
+        with NCDataset(path, 'r') as ds:
+            for tv in ['ocean_time', 'time', 'bulk_time']:
+                if tv not in ds.variables:
+                    continue
+                var = ds.variables[tv]
+                raw = np.asarray(var[:]).ravel()
+                if np.issubdtype(raw.dtype, np.datetime64):
+                    return Reader._times_to_pydatetime(
+                        pd.to_datetime(raw).to_pydatetime()
+                    )
+                units = getattr(var, 'units', None)
+                if units is None:
+                    raise ValueError(f'Time variable {tv} in {path} has no units')
+                units = Reader._croco_time_units(units)
+                calendar = getattr(var, 'calendar', 'standard')
+                decoded = num2date(
+                    raw, units=units, calendar=calendar,
+                    only_use_cftime_datetimes=False,
+                    only_use_python_datetimes=True,
+                )
+                return Reader._times_to_pydatetime(decoded)
+        raise ValueError(f'No time variable in {path}')
+
+    @staticmethod
+    def _read_file_times(path):
+        """Return sorted simulation times covered by one ROMS source.
+
+        Local files use netCDF4 (time var only). Remote URLs use xarray.
+        """
+        if Reader._is_remote_source(path):
+            return Reader._read_file_times_xarray(path)
+        return Reader._read_file_times_netcdf4(path)
+
+    @staticmethod
+    def _catalog_cache_path():
+        """Path of the JSON time-index cache (override with OPENDRIFT_ROMS_TIME_INDEX)."""
+        env = os.environ.get('OPENDRIFT_ROMS_TIME_INDEX')
+        if env:
+            return env
+        cache_dir = os.path.join(os.path.expanduser('~'), '.cache', 'opendrift')
+        return os.path.join(cache_dir, 'roms_file_times.json')
+
+    @staticmethod
+    def _file_identity(path):
+        """Return (realpath, mtime_ns, size) used as cache key for local files."""
+        st = os.stat(path)
+        mtime_ns = getattr(st, 'st_mtime_ns', int(st.st_mtime * 1e9))
+        return os.path.realpath(path), int(mtime_ns), int(st.st_size)
+
+    @staticmethod
+    def _load_time_index(cache_path):
+        """Load cached per-file time lists, or ``{}`` if missing/unreadable."""
+        import json
+        try:
+            with open(cache_path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _save_time_index(cache_path, index):
+        """Atomically write the per-file time-index JSON cache."""
+        import json
+        try:
+            os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+            tmp = cache_path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(index, f)
+            os.replace(tmp, cache_path)
+        except Exception as e:
+            logger.debug(f'ROMS time index not saved ({e})')
+
+    def _build_file_catalog(self, sources):
+        """Build ``[(path, t0, t1, times), ...]`` for lazy multi-file windowing.
+
+        Reads each file's time axis once (sequential; skip workers are
+        daemonic and cannot spawn a process pool), with an optional disk
+        cache keyed by path identity. Required before opening a sliding
+        ``time_buffer`` window over many ROMS his files.
+        """
+        from datetime import datetime as _dt
+
+        for path in sources:
+            if isinstance(path, xr.Dataset):
+                raise ValueError('time_buffer lazy mode requires file paths, not a Dataset')
+
+        cache_path = self._catalog_cache_path()
+        index = self._load_time_index(cache_path)
+        catalog = []
+        to_read = []
+        n_cached = 0
+
+        for path in sources:
+            if self._is_remote_source(path):
+                to_read.append(path)
+                continue
+            try:
+                real, mtime_ns, size = self._file_identity(path)
+            except OSError:
+                to_read.append(path)
+                continue
+            hit = index.get(real)
+            if (
+                isinstance(hit, dict)
+                and hit.get('mtime_ns') == mtime_ns
+                and hit.get('size') == size
+                and hit.get('times')
+            ):
+                times = [_dt.fromisoformat(s) for s in hit['times']]
+                catalog.append((path, times[0], times[-1], times))
+                n_cached += 1
+                logger.debug(
+                    f'ROMS catalog {path}: {times[0]} -> {times[-1]} '
+                    f'({len(times)} steps, cached)'
+                )
+            else:
+                to_read.append(path)
+
+        t0 = datetime.now()
+        results = [(path, self._read_file_times(path)) for path in to_read]
+        if to_read:
+            logger.info(
+                f'ROMS catalog reading {len(to_read)} files sequentially '
+                f'({n_cached} cached)'
+            )
+
+        for path, times in results:
+            catalog.append((path, times[0], times[-1], times))
+            logger.debug(
+                f'ROMS catalog {path}: {times[0]} -> {times[-1]} ({len(times)} steps)'
+            )
+            if not self._is_remote_source(path):
+                try:
+                    real, mtime_ns, size = self._file_identity(path)
+                    index[real] = {
+                        'mtime_ns': mtime_ns,
+                        'size': size,
+                        'times': [t.isoformat() for t in times],
+                    }
+                except OSError:
+                    pass
+
+        if results:
+            self._save_time_index(cache_path, index)
+
+        catalog.sort(key=lambda c: c[1])
+        elapsed = (datetime.now() - t0).total_seconds()
+        logger.info(
+            f'ROMS catalog ready: {len(catalog)} files in {elapsed:.1f}s '
+            f'({n_cached} cached, {len(to_read)} read)'
+        )
+        return catalog
+
+
+    def _merge_gridfile(self):
+        """Merge ``gridfile`` variables into the currently open Dataset."""
+        if self._gridfile is None:
             return
-        logger.debug('Calculating sigma2z-coefficients for whole domain')
-        starttime = datetime.now()
-        M = self.sea_floor_depth_below_sea_level.shape[0]
-        N = self.sea_floor_depth_below_sea_level.shape[1]
-        O = len(self.z_rho_tot)
-        dummyvar = np.ones((O, M, N))
-        dummy, self.s2z_A, self.s2z_C, self.s2z_I, self.s2z_kmax = depth.multi_zslice(
-            dummyvar, self.z_rho_tot, self.zlevels)
-        self.s2z_A = self.s2z_A.reshape(len(self.zlevels), M, N)
-        self.s2z_C = self.s2z_C.reshape(len(self.zlevels), M, N)
-        logger.info('Time: ' + str(datetime.now() - starttime))
+        gf = xr.open_dataset(self._gridfile)
+        for var in gf:
+            if var in self.Dataset:
+                logger.warning(f'Skipping duplicate variable {var} from grdfile')
+                gf = gf.drop_vars(var)
+        self.Dataset = xr.merge([self.Dataset, gf], compat='override')
+
+    def _rename_croco_dimensions(self):
+        """Fix wrongly named Croco dimensions (58cfaa56). Re-run after each lazy window open."""
+        for var in self.Dataset:
+            dims = self.Dataset[var].dims
+            if 'eta_rho' in dims and 'xi_u' in dims:
+                logger.warning(f'Wrongly named dimensions of {var} in Croco output: ' +
+                               'Renaming dimensions (eta_rho, xi_u) to (eta_u, xi_u)')
+                self.Dataset[var] = self.Dataset[var].rename({'eta_rho': 'eta_u'})
+            elif 'eta_v' in dims and 'xi_rho' in dims:
+                logger.warning(f'Wrongly named dimensions of {var} in Croco output: ' +
+                               'Renaming dimensions (eta_v, xi_rho) to (eta_v, xi_v)')
+                self.Dataset[var] = self.Dataset[var].rename({'xi_rho': 'xi_v'})
+
+    @staticmethod
+    def _croco_time_units(time_units):
+        """Map non-CF CROCO units ('second' / 'days') to a decodeable string (089d28d1)."""
+        if time_units == 'second':
+            logger.info('Ocean time given as seconds relative to start '
+                        'Setting artifical start time of 1 Jan 2000.')
+            return 'seconds since 2000-01-01 00:00:00'
+        if time_units == 'days':
+            logger.info('Ocean time given as days relative to start '
+                        'Setting artifical start time of 1 Jan 2000.')
+            return 'days since 2000-01-01 00:00:00'
+        return time_units
+
+    @staticmethod
+    def _decode_ocean_time(ocean_time):
+        """Decode ROMS/CROCO time to a list of datetime (CF or the 089d28d1 hack)."""
+        if np.issubdtype(ocean_time.dtype, np.datetime64):
+            times = pd.to_datetime(ocean_time).to_pydatetime()
+        else:
+            time_units = ocean_time.attrs['units']
+            time_units = Reader._croco_time_units(time_units)
+            times = num2date(ocean_time[:], time_units)
+        if isinstance(times, np.ndarray):
+            times = list(times)
+        return times
+
+    def _select_files_for_window(self, center_time):
+        """Return his files overlapping ``[center_time ± time_buffer]``.
+
+        Also returns the window bounds ``(t0, t1)``. If none overlap, falls back
+        to the single nearest file in the catalogue.
+        """
+        t0 = center_time - self.time_buffer
+        t1 = center_time + self.time_buffer
+        selected = []
+        for path, f0, f1, _times in self._file_catalog:
+            if f1 < t0 or f0 > t1:
+                continue
+            selected.append(path)
+        if not selected:
+            path, f0, f1, _times = min(
+                self._file_catalog,
+                key=lambda c: abs((c[1] - center_time).total_seconds()),
+            )
+            selected = [path]
+            logger.warning(
+                f'No ROMS files in buffer around {center_time}; using nearest {path}'
+            )
+        return selected, t0, t1
+
+    def _mfdataset_options(self):
+        """Options for ``open_dataset_opendrift`` / ``open_mfdataset``.
+
+        ``preprocess`` is attached here (not stored on the options dict) so
+        Reader attribute comparison in tests stays stable across instances.
+        """
+        opts = dict(self._open_mfdataset_options)
+        if self._drop_non_essential_vars_pop is not None:
+            opts['preprocess'] = self._drop_non_essential_vars_pop
+        return opts
+
+    def _open_time_window(self, center_time):
+        """Open (or reuse) the mfdataset covering ``center_time ± time_buffer``.
+
+        Closes the previous Dataset when the selected file set changes and
+        clears cached sigma→z arrays that belong to the old window.
+        """
+        selected, _, _ = self._select_files_for_window(center_time)
+        if self._loaded_files == selected:
+            return
+        logger.info(
+            f'ROMS opening {len(selected)}/{len(self._file_catalog)} files '
+            f'for window around {center_time} '
+            f'(buffer={self.time_buffer})'
+        )
+        old = getattr(self, 'Dataset', None)
+        self.Dataset = open_dataset_opendrift(
+            source=selected if len(selected) > 1 else selected[0],
+            open_mfdataset_options=self._mfdataset_options(),
+        )
+        self._merge_gridfile()
+        self._rename_croco_dimensions()
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        self._loaded_files = list(selected)
+        ocean_time = None
+        for tv in ['ocean_time', 'time', 'bulk_time']:
+            if tv in self.Dataset.variables:
+                ocean_time = self.Dataset.variables[tv]
+                break
+        self._loaded_times = list(self._decode_ocean_time(ocean_time))
+        self._window_start = self._loaded_times[0]
+        self._window_end = self._loaded_times[-1]
+        self._clear_s2z_cache()
+        self._zeta = None
+        if self._mask_rho is not None and getattr(self._mask_rho, 'ndim', 2) == 3:
+            self._mask_rho = None
+        if self._mask_u is not None and getattr(self._mask_u, 'ndim', 2) == 3:
+            self._mask_u = None
+        if self._mask_v is not None and getattr(self._mask_v, 'ndim', 2) == 3:
+            self._mask_v = None
+        logger.info(
+            f'ROMS window now {self._window_start} -> {self._window_end} '
+            f'({len(self._loaded_times)} steps)'
+        )
+
+    def _ensure_time_window(self, time):
+        """Swap open his files when ``time`` leaves the current buffered window.
+
+        Called from ``get_variables`` in lazy multi-file mode. Keeps a small
+        margin so the open Dataset still covers time_before / time_after.
+        """
+        if not self._lazy_files:
+            return
+        margin = self.time_step if self.time_step is not None else timedelta(hours=1)
+        if (
+            self._window_start is not None
+            and self._window_end is not None
+            and time >= self._window_start + margin
+            and time <= self._window_end - margin
+        ):
+            return
+        self._open_time_window(time)
+
+    def _local_indx_time(self, nearest_time):
+        """Map a global timeline instant to an index in the open Dataset.
+
+        Needed because ``self.times`` spans the full catalogue while the open
+        Dataset only holds the current ``time_buffer`` window.
+        """
+        for i, t in enumerate(self._loaded_times):
+            if t == nearest_time:
+                return i
+            try:
+                if abs((t - nearest_time).total_seconds()) < 1.0:
+                    return i
+            except Exception:
+                pass
+        i = int(np.argmin([abs((t - nearest_time).total_seconds()) for t in self._loaded_times]))
+        logger.warning(
+            f'ROMS local time index fallback: wanted {nearest_time}, '
+            f'using {self._loaded_times[i]}'
+        )
+        return i
 
     def _destagger_velocity_component(self, par, indxTime, indy, indx, inds, z_target):
         """u/v (or ubar/vbar) at the other face of each rho cell, land as NaN"""
@@ -526,6 +961,10 @@ class Reader(StructuredReader):
 
         nearestTime, dummy1, dummy2, indxTime, dummy3, dummy4 = \
             self.nearest_time(time)
+
+        if self._lazy_files:
+            self._ensure_time_window(time)
+            indxTime = self._local_indx_time(nearestTime)
 
         variables = {}
 
@@ -854,6 +1293,28 @@ class Reader(StructuredReader):
             return variables, masks_store
         else:
             return variables
+
+
+    def _ensure_s2z_coefficients(self):
+        """Whole-domain s2z A,C from multi_zslice, once per Dataset."""
+        if self.s2z_A is not None:
+            return
+        logger.debug('Calculating sigma2z-coefficients for whole domain')
+        starttime = datetime.now()
+        M = self.sea_floor_depth_below_sea_level.shape[0]
+        N = self.sea_floor_depth_below_sea_level.shape[1]
+        O = len(self.z_rho_tot)
+        dummyvar = np.ones((O, M, N))
+        dummy, self.s2z_A, self.s2z_C, self.s2z_I, self.s2z_kmax = depth.multi_zslice(
+            dummyvar, self.z_rho_tot, self.zlevels)
+        self.s2z_A = self.s2z_A.reshape(len(self.zlevels), M, N)
+        self.s2z_C = self.s2z_C.reshape(len(self.zlevels), M, N)
+        logger.info('Time: ' + str(datetime.now() - starttime))
+
+    def _clear_s2z_cache(self):
+        self.z_rho_tot = None
+        self.s2z_A = None
+        self.s2z_C = None
 
 
 def rotate_vectors_angle(u, v, radians):
