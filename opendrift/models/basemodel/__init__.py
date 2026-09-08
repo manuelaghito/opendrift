@@ -392,13 +392,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                     'previous means that objects will move back to the previous location '
                     'if they hit land'
             },
-            'general:coastline_at_end': {
-                'type': 'bool',
-                'default': True,
-                'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'If True, apply general:coastline_action at the end of the simulation.'
-                    'Set False for intermediate runs that will be saved and restarted in a new simulation.'
-            },
             'general:coastline_approximation_precision': {
                 'type': 'float',
                 'default': 0.001,
@@ -674,7 +667,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             for var in self._elements_previous:
                 self._elements_previous[var][self.elements.ID] = getattr(self.elements, var)
 
-    def interact_with_coastline(self, final=False):
+    def interact_with_coastline(self, final=False, intermediate_simulation=False):
         """Coastline interaction according to configuration setting"""
 
         if self.num_elements_active() == 0:
@@ -685,6 +678,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         i = self.get_config('general:coastline_action')
         if i == 'none':  # Do nothing
             return
+
+        if intermediate_simulation is True:
+            return  # Coastline interaction is left for next simulationstarting from saved output
 
         coastline_approximation_precision = self.get_config('general:coastline_approximation_precision')
 
@@ -1842,7 +1838,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             outfile=None,
             export_variables=None,
             export_buffer_length=100,
-            stop_on_error=False):
+            stop_on_error=False,
+            intermediate_simulation=False):
         """Start a trajectory simulation, after initial configuration.
 
         Performs the main loop:
@@ -1876,6 +1873,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 - end_time: datetime object defining the end of the simulation
             export_variables: list of variables and parameter names to be
                 saved to file. Default is None (all variables are saved)
+            intermediate_simulation: if set to True, coastline_interaction is skipped
+                on final time step, to be performed after a new simulation is started
+                from the saved state.
         """
 
         # Exporting software and hardware specification, for possible debugging
@@ -2331,8 +2331,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         self.timer_start('cleaning up')
         logger.debug('Cleaning up')
 
-        if self.get_config('general:coastline_at_end'):
-            self.interact_with_coastline(final=True)
+        self.interact_with_coastline(final=True, intermediate_simulation=intermediate_simulation)
         self.timer_end('cleaning up')
         self.timer_end('total time')
         self.state_to_buffer(final=True)  # Append final status to buffer
