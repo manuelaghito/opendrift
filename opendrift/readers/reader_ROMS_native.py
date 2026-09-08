@@ -569,7 +569,6 @@ class Reader(StructuredReader):
             inds = range(np.maximum(0, inds_min-self.verticalbuffer),
                          np.minimum(self.num_layers,
                                     inds_max + 1 + self.verticalbuffer))
-            z_rho = z_rho[inds, :, :]
             # Determine the z-levels to which to interpolate
             zi1 = np.maximum(0, bisect_left(-np.array(self.zlevels),
                                             -z.max()) - self.verticalbuffer)
@@ -589,6 +588,7 @@ class Reader(StructuredReader):
             return mask, mask_name
 
         masks_store = {}  # To store masks for various grids
+        s2z_inds_finalized = False
         for par in requested_variables:
             varname = self.standard_name_mapping[par]
             var = self.Dataset.variables[varname]
@@ -602,6 +602,40 @@ class Reader(StructuredReader):
             elif var.ndim == 3:
                 variables[par] = var[itxy]
             elif var.ndim == 4:
+                # 4D fields F are read on sigma layers, then interpolated to
+                # z-levels by R = (1-A)*F[C-1] + A*F[C], where C and C-1 are
+                # the sigma layers above and below the required z. With
+                # precalculate_s2z_coefficients == True, C comes from the
+                # whole-domain table as a full-column index, 0 = seabed to
+                # num_layers-1 = surface.
+                #
+                # To save I/O we read F only for a subset of layers:
+                # inds -> itsxy -> variables[par] -> F. So F[0] is layer
+                # si_bottom, not layer 0. Before C can be used,
+                # inds must contain every layer C and C-1 over
+                # [zi1:zi2, yi1:yi2, xi1:xi2], so it is expanded to cover
+                # [C_bottom-1 .. C_top]. C is then shifted to F numbering
+                # by C = C - si_bottom (below).
+                #
+                # Done once, on the first 4D field; later fields reuse it.
+                if not s2z_inds_finalized:
+                    if (self.precalculate_s2z_coefficients is True and
+                            len(np.atleast_1d(inds)) > 1):
+                        si_bottom, si_top = int(min(inds)), int(max(inds))
+                        self._ensure_s2z_coefficients()
+                        C = np.asarray(self.s2z_C[zi1:zi2, yi1:yi2, xi1:xi2])
+                        # multi_zslice always returns finite clipped ints;
+                        # this guard is only for a degenerate empty slice.
+                        if C.size:
+                            C_bottom = int(C.min())
+                            C_top = int(C.max())
+                            si_bottom = int(min(si_bottom, max(0, C_bottom - 1)))
+                            si_top = int(max(si_top, min(self.num_layers - 1, C_top)))
+                            inds = range(si_bottom, si_top + 1)
+                        itsxy = (indxTime, inds, indy, indx)
+                    if not np.isscalar(inds):
+                        z_rho = z_rho[inds, :, :]
+                    s2z_inds_finalized = True
                 variables[par] = var[itsxy]
             else:
                 raise Exception('Wrong dimension of variable: ' +
@@ -643,9 +677,11 @@ class Reader(StructuredReader):
                             # Select relevant subset of full arrays
                             zle = np.arange(zi1, zi2)  # The relevant depth levels
                             A = np.asarray(self.s2z_A[zi1:zi2, yi1:yi2, xi1:xi2])
-                            C = np.asarray(self.s2z_C[zi1:zi2, yi1:yi2, xi1:xi2])
-                            C = C - C.max() + variables[par].shape[0] - 1
-                            C[C<1] = 1
+                            # Old (commit 0c734bf5): C - C.max() + N - 1 was
+                            # right only when C.max() == si_top; otherwise it
+                            # used the wrong sigma layers from F.
+                            C = C - si_bottom
+                            C[C<1] = 1  # keep C-1 >= 0 at the seabed
                             A = A.reshape(len(zle), len(indx)*len(indy))
                             C = C.reshape(len(zle), len(indx)*len(indy))
                             I = np.arange(len(indx)*len(indy))
