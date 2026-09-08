@@ -433,6 +433,22 @@ class Reader(StructuredReader):
                 raise ValueError('No angle between xi and east found')
         return self._angle
 
+    def _ensure_s2z_coefficients(self):
+        """Whole-domain s2z A,C from multi_zslice, once per Dataset."""
+        if self.s2z_A is not None:
+            return
+        logger.debug('Calculating sigma2z-coefficients for whole domain')
+        starttime = datetime.now()
+        M = self.sea_floor_depth_below_sea_level.shape[0]
+        N = self.sea_floor_depth_below_sea_level.shape[1]
+        O = len(self.z_rho_tot)
+        dummyvar = np.ones((O, M, N))
+        dummy, self.s2z_A, self.s2z_C, self.s2z_I, self.s2z_kmax = depth.multi_zslice(
+            dummyvar, self.z_rho_tot, self.zlevels)
+        self.s2z_A = self.s2z_A.reshape(len(self.zlevels), M, N)
+        self.s2z_C = self.s2z_C.reshape(len(self.zlevels), M, N)
+        logger.info('Time: ' + str(datetime.now() - starttime))
+
     def get_variables(self, requested_variables, time=None,
                       x=None, y=None, z=None, testing=False):
         start_time = datetime.now()
@@ -621,19 +637,7 @@ class Reader(StructuredReader):
                 if len(np.atleast_1d(inds)) > 1:
                     logger.debug('sigma to z for ' + varname)
                     if self.precalculate_s2z_coefficients is True:
-                        M = self.sea_floor_depth_below_sea_level.shape[0]
-                        N = self.sea_floor_depth_below_sea_level.shape[1]
-                        O = len(self.z_rho_tot)
-                        if self.s2z_A is None:
-                            logger.debug('Calculating sigma2z-coefficients for whole domain')
-                            starttime = datetime.now()
-                            dummyvar = np.ones((O, M, N))
-                            dummy, self.s2z_A, self.s2z_C, self.s2z_I, self.s2z_kmax = depth.multi_zslice(dummyvar, self.z_rho_tot, self.zlevels)
-                            # Store arrays/coefficients
-                            self.s2z_A = self.s2z_A.reshape(len(self.zlevels), M, N)
-                            self.s2z_C = self.s2z_C.reshape(len(self.zlevels), M, N)
-                            #self.s2z_I = self.s2z_I.reshape(M, N)
-                            logger.info('Time: ' + str(datetime.now() - starttime))
+                        self._ensure_s2z_coefficients()
                         if 'A' not in locals():
                             logger.debug('Re-using sigma2z-coefficients')
                             # Select relevant subset of full arrays
