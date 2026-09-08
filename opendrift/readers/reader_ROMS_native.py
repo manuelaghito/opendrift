@@ -478,10 +478,12 @@ class Reader(StructuredReader):
         buffer = self.buffer
         # Avoiding the last pixel in each dimension, since there are
         # several grids which are shifted (rho, u, v, psi)
-        indx = np.arange(np.max([0, indx.min()-buffer]),
-                            np.min([indx.max()+buffer, self.lon.shape[1]-1]))
-        indy = np.arange(np.max([0, indy.min()-buffer]),
-                            np.min([indy.max()+buffer, self.lon.shape[0]-1]))
+        xi1 = int(np.max([0, indx.min()-buffer]))
+        xi2 = int(np.min([indx.max()+buffer, self.lon.shape[1]-1]))
+        yi1 = int(np.max([0, indy.min()-buffer]))
+        yi2 = int(np.min([indy.max()+buffer, self.lon.shape[0]-1]))
+        indx = np.arange(xi1, xi2)
+        indy = np.arange(yi1, yi2)
 
         # define indices
         ixy = (indy,indx)
@@ -636,14 +638,8 @@ class Reader(StructuredReader):
                             logger.debug('Re-using sigma2z-coefficients')
                             # Select relevant subset of full arrays
                             zle = np.arange(zi1, zi2)  # The relevant depth levels
-                            A = self.s2z_A.copy()  # Awkward subsetting to prevent losing one dimension
-                            A = A[:,:,indx]
-                            A = A[:,indy,:]
-                            A = A[zle,:,:]
-                            C = self.s2z_C.copy()
-                            C = C[:,:,indx]
-                            C = C[:,indy,:]
-                            C = C[zle,:,:]
+                            A = np.asarray(self.s2z_A[zi1:zi2, yi1:yi2, xi1:xi2])
+                            C = np.asarray(self.s2z_C[zi1:zi2, yi1:yi2, xi1:xi2])
                             C = C - C.max() + variables[par].shape[0] - 1
                             C[C<1] = 1
                             A = A.reshape(len(zle), len(indx)*len(indy))
