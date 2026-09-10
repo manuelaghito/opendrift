@@ -12,5 +12,4 @@ If an agent or LLM was involved in generating this issue, please say so below, a
 </details>
 
 - [ ] I agree to follow the project's [contribution guidelines](https://github.com/OpenDrift/opendrift/blob/master/CONTRIBUTING.md).
-- [ ] I have added an entry to `history.rst` if the change is significant, breaking, or interesting to others.
 ---
