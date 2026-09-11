@@ -490,15 +490,12 @@ class ChemicalDrift(OceanDrift):
 
 
         if 'specie' in kwargs:
-            print('num_elements', num_elements)
-            try:
-                print('len specie:',len(kwargs['specie']))
-            except:
-                print('specie:',kwargs['specie'])
-
-            init_specie = np.ones(num_elements,dtype=int)
-            init_specie[:] = kwargs['specie']
-
+            init_specie = np.asarray(kwargs['specie'], dtype=int).ravel()
+            if init_specie.size != num_elements:
+                raise ValueError(
+                    f"specie length {init_specie.size} != number {num_elements}"
+                )
+            kwargs['specie'] = init_specie
 
         else:
 
@@ -537,15 +534,14 @@ class ChemicalDrift(OceanDrift):
             logger.debug( '{:>9} {:>3} {:24} '.format(  np.sum(init_specie==i), i, sp ) )
 
         # Set initial particle size
-        if 'diameter' in kwargs:
-            diameter = kwargs['diameter']
+        diam_in = kwargs.get('diameter')
+        if diam_in is not None and np.ndim(diam_in) > 0 and np.size(diam_in) == num_elements:
+            init_diam = np.asarray(diam_in, dtype=float).ravel()
         else:
-            diameter = self.get_config('chemical:particle_diameter')
-
-        std = self.get_config('chemical:particle_diameter_uncertainty')
-
-        init_diam = np.zeros(num_elements,float)
-        init_diam[init_specie==self.num_prev] = diameter + np.random.normal(0, std, sum(init_specie==self.num_prev))
+            diameter = diam_in if diam_in is not None else self.get_config('chemical:particle_diameter')
+            std = self.get_config('chemical:particle_diameter_uncertainty')
+            init_diam = np.zeros(num_elements,float)
+            init_diam[init_specie==self.num_prev] = diameter + np.random.normal(0, std, sum(init_specie==self.num_prev))
         kwargs['diameter'] = init_diam
 
 
