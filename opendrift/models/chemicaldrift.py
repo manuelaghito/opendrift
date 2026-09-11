@@ -2982,65 +2982,65 @@ class ChemicalDrift(OceanDrift):
         # TODO: Add emission uncertainty based on 95% confidence interval
 
     def seed_from_DataArray(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, **kwargs):
-            """Seed elements based on a dataarray with STEAM emission data
+        """Seed elements based on a dataarray with STEAM emission data
 
-            Arguments:
-                steam: dataarray with steam emission data, with coordinates
-                    * latitude   (latitude) float32
-                    * longitude  (longitude) float32
-                    * time       (time) datetime64[ns]
+        Arguments:
+            steam: dataarray with steam emission data, with coordinates
+                * latitude   (latitude) float32
+                * longitude  (longitude) float32
+                * time       (time) datetime64[ns]
 
 
-                radius:      scalar, unit: meters
-                lowerbound:  scalar, elements with lower values are discarded
-            """
+            radius:      scalar, unit: meters
+            lowerbound:  scalar, elements with lower values are discarded
+        """
 
-            if chemical_compound is None:
-                chemical_compound = self.get_config('chemical:compound')
+        if chemical_compound is None:
+            chemical_compound = self.get_config('chemical:compound')
 
-            #mass_element_ug=1e3      # 1e3 - 1 element is 1mg chemical
-            #mass_element_ug=20e3      # 100e3 - 1 element is 100mg chemical
-            #mass_element_ug=100e3      # 100e3 - 1 element is 100mg chemical
-            #mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
+        #mass_element_ug=1e3      # 1e3 - 1 element is 1mg chemical
+        #mass_element_ug=20e3      # 100e3 - 1 element is 100mg chemical
+        #mass_element_ug=100e3      # 100e3 - 1 element is 100mg chemical
+        #mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
 
-            sel=np.where((steam > lowerbound) & (steam < higherbound))
-            t=steam.time[sel[0]].data
-            la=steam.latitude[sel[1]].data
-            lo=steam.longitude[sel[2]].data
+        sel=np.where((steam > lowerbound) & (steam < higherbound))
+        t=steam.time[sel[0]].data
+        la=steam.latitude[sel[1]].data
+        lo=steam.longitude[sel[2]].data
 
-            data=np.array(steam.data)
+        data=np.array(steam.data)
 
-            if number_of_elements is not None:
-                total_volume = np.sum(data[sel])
-                total_mass = total_volume * self.emission_factors(scrubber_type, chemical_compound)
-                mass_element_ug = total_mass / number_of_elements
-                mass_element_ug_0 = total_mass / number_of_elements
+        if number_of_elements is not None:
+            total_volume = np.sum(data[sel])
+            total_mass = total_volume * self.emission_factors(scrubber_type, chemical_compound)
+            mass_element_ug = total_mass / number_of_elements
+            mass_element_ug_0 = total_mass / number_of_elements
 
-            for i in range(0,t.size):
-                scrubberwater_vol_l=data[sel][i]
-                mass_ug=scrubberwater_vol_l * self.emission_factors(scrubber_type, chemical_compound)
+        for i in range(0,t.size):
+            scrubberwater_vol_l=data[sel][i]
+            mass_ug=scrubberwater_vol_l * self.emission_factors(scrubber_type, chemical_compound)
 
-                if number_of_elements is None:
-                    number=np.array(mass_ug / mass_element_ug).astype('int')
-                else:
-                    number=np.ceil(np.array(mass_ug / mass_element_ug_0)).astype('int')
-                    mass_element_ug=mass_ug/number
+            if number_of_elements is None:
+                number=np.array(mass_ug / mass_element_ug).astype('int')
+            else:
+                number=np.ceil(np.array(mass_ug / mass_element_ug_0)).astype('int')
+                mass_element_ug=mass_ug/number
 
-                time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+            time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
 
-                if number>0:
-                    z = -1*np.random.uniform(0, 1, number)
-                    self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
-                                radius=radius, number=number, time=time,
-                                mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
+            if number>0:
+                z = -1*np.random.uniform(0, 1, number)
+                self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
+                            radius=radius, number=number, time=time,
+                            mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
 
-                mass_residual = mass_ug - number*mass_element_ug
+            mass_residual = mass_ug - number*mass_element_ug
 
-                if mass_residual>0 and number_of_elements is None:
-                    z = -1*np.random.uniform(0, 1, 1)
-                    self.seed_elements(lon=lo[i], lat=la[i],
-                                radius=radius, number=1, time=time,
-                                mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
+            if mass_residual>0 and number_of_elements is None:
+                z = -1*np.random.uniform(0, 1, 1)
+                self.seed_elements(lon=lo[i], lat=la[i],
+                            radius=radius, number=1, time=time,
+                            mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
 
     seed_from_STEAM = seed_from_DataArray
     ''' Alias of seed_from_DataArray method for backward compatibility
