@@ -3060,6 +3060,30 @@ class ChemicalDrift(OceanDrift):
             f'{n_tot} elements (single seed_elements call)'
         )
         z = -np.random.uniform(0, 1, n_tot)
+
+        # 'adaptive': hard-capped disk, radius also shrunk per element to
+        # stay inside its own source cell (cos(lat)-scaled lon width).
+        if kwargs.get('radius_type') == 'adaptive':
+            m_per_deg = 111320.0
+            if steam.longitude.size > 1:
+                dlon_deg = float(abs(steam.longitude[1] - steam.longitude[0]))
+            else:
+                dlon_deg = None
+            if steam.latitude.size > 1:
+                dlat_deg = float(abs(steam.latitude[1] - steam.latitude[0]))
+            else:
+                dlat_deg = None
+            half_widths_m = []
+            if dlon_deg is not None:
+                half_widths_m.append(0.5 * dlon_deg * m_per_deg * np.cos(np.radians(lat_e)))
+            if dlat_deg is not None:
+                half_widths_m.append(np.full(n_tot, 0.5 * dlat_deg * m_per_deg))
+            if half_widths_m:
+                cell_radius_m = np.min(np.stack(half_widths_m), axis=0)
+                radius = np.minimum(np.full(n_tot, radius, dtype=float), cell_radius_m)
+            kwargs = dict(kwargs)
+            kwargs['radius_type'] = 'uniform'
+
         self.seed_elements(
             lon=lon_e,
             lat=lat_e,
@@ -3071,6 +3095,7 @@ class ChemicalDrift(OceanDrift):
             mass_volatilized=0,
             z=z,
             origin_marker=1,
+            **kwargs,
         )
 
     seed_from_STEAM = seed_from_DataArray
