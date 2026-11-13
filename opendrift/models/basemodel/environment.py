@@ -709,6 +709,10 @@ class Environment(Timeable, Configurable):
                     if profiles_from_reader is not None and var in profiles_from_reader:
                         if 'env_profiles' not in locals():
                             env_profiles = env_profiles_tmp
+                        if var not in env_profiles and var in env_profiles_tmp:
+                            # First reader group providing this profile
+                            env_profiles[var] = np.ma.masked_all(
+                                (len(env_profiles['z']), len(lon)), dtype='float32')
                         # TODO: fix to be checked
                         if var in env_profiles and var in env_profiles_tmp:
                             # If one profile has fewer vertical layers than
