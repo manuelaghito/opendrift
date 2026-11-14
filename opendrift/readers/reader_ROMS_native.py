@@ -892,45 +892,30 @@ class Reader(StructuredReader):
         )
         return i
 
-    def _destagger_velocity_component(self, par, indxTime, indy, indx, inds, z_target):
-        """u/v (or ubar/vbar) at the other face of each rho cell, land as NaN"""
-        varname = self.standard_name_mapping[par]
-        if varname not in ('u', 'v', 'ubar', 'vbar'):
-            return None  # e.g. u_eastward/v_northward are already rho-grid
-        shift_axis = 'x' if varname in ('u', 'ubar') else 'y'
-        mask_attr = 'mask_u' if shift_axis == 'x' else 'mask_v'
-
-        if shift_axis == 'x':
-            indx_shift = np.clip(indx - 1, 0, None)
-            indy_shift = indy
-        else:
-            indx_shift = indx
-            indy_shift = np.clip(indy - 1, 0, None)
-
-        var = self.Dataset.variables[varname]
-        ixy_shift = (indy_shift, indx_shift)
-        itxy_shift = (indxTime, indy_shift, indx_shift)
-        itsxy_shift = (indxTime, inds, indy_shift, indx_shift)
-
-        if var.ndim == 3:
-            raw_shift = np.asarray(var[itxy_shift])
-        elif var.ndim == 4:
-            raw_shift = np.asarray(var[itsxy_shift])
-            if len(np.atleast_1d(inds)) > 1:
-                # same sigma-to-z sequence as get_variables, at the shifted index
-                H_shift = self.sea_floor_depth_below_sea_level[indy_shift, indx_shift]
-                zeta_shift = np.asarray(self.zeta[itxy_shift])
-                z_rho_shift = depth.sdepth(H_shift, zeta_shift, self.hc, self.Cs_r,
-                                            Vtransform=self.Vtransform, Vstretching=self.Vstretching)
-                z_rho_shift = z_rho_shift - zeta_shift[np.newaxis]
-                z_rho_shift = z_rho_shift[inds, :, :]
-                raw_shift, _, _, _, _ = depth.multi_zslice(raw_shift, z_rho_shift, z_target)
-                raw_shift[raw_shift > 1e+9] = np.nan
-        else:
+    def _destagger_axis(self, par):
+        """'x' for u, 'y' for v (staggered west/south of rho), else None"""
+        if not self.destagger_velocity:
             return None
+        if par not in ('x_sea_water_velocity', 'y_sea_water_velocity'):
+            return None
+        varname = self.standard_name_mapping[par]
+        # e.g. u_eastward/v_northward are already rho-grid
+        return {'u': 'x', 'ubar': 'x', 'v': 'y', 'vbar': 'y'}.get(varname)
 
+    def _destagger_velocity_component(self, par, raw_shift, indxTime, indy_shift,
+                                      indx_shift, inds, z_rho_shift, z_target):
+        """u/v (or ubar/vbar) at the other face of each rho cell, land as NaN"""
+        var = self.Dataset.variables[self.standard_name_mapping[par]]
+        if var.ndim == 4 and len(np.atleast_1d(inds)) > 1:
+            # same sigma-to-z sequence as get_variables, at the shifted index
+            raw_shift, _, _, _, _ = depth.multi_zslice(raw_shift, z_rho_shift, z_target)
+            raw_shift[raw_shift > 1e+9] = np.nan
+
+        mask_attr = 'mask_u' if self._destagger_axis(par) == 'x' else 'mask_v'
         mask_obj = getattr(self, mask_attr)  # mask_u/mask_v: static (2D) or wetdry (3D)
-        mask_shift = np.asarray(mask_obj[itxy_shift if mask_obj.ndim == 3 else ixy_shift])
+        ixy_shift = (indy_shift, indx_shift)
+        mask_shift = np.asarray(mask_obj[(indxTime,) + ixy_shift if mask_obj.ndim == 3
+                                         else ixy_shift])
         if mask_shift.min() == 0:
             raw_shift = np.where(mask_shift == 0, np.nan, raw_shift)
 
@@ -991,6 +976,12 @@ class Reader(StructuredReader):
         yi2 = int(np.min([indy.max()+buffer, self.lon.shape[0]-1]))
         indx = np.arange(xi1, xi2)
         indy = np.arange(yi1, yi2)
+        # One more cell west/south, for the other face of u/v (de-staggering)
+        ext = 1 if self.destagger_velocity else 0
+        indx_e = np.arange(max(xi1 - ext, 0), xi2)
+        indy_e = np.arange(max(yi1 - ext, 0), yi2)
+        indx_shift = np.clip(indx - 1, 0, None)
+        indy_shift = np.clip(indy - 1, 0, None)
 
         # define indices
         ixy = (indy,indx)
@@ -1026,16 +1017,17 @@ class Reader(StructuredReader):
                 # Transform z_rho to match convention of z.
                 self.z_rho_tot -= np.asarray(zeta)[np.newaxis]
 
-            H = self.sea_floor_depth_below_sea_level[indy, indx]
-            zeta = self.zeta[itxy]
-            z_rho = depth.sdepth(H, zeta, self.hc, self.Cs_r,
-                                 Vtransform=self.Vtransform,
-				 Vstretching=self.Vstretching)
+            H = self.sea_floor_depth_below_sea_level[indy_e, indx_e]
+            zeta = self.zeta[(indxTime, indy_e, indx_e)]
+            z_rho_e = depth.sdepth(H, zeta, self.hc, self.Cs_r,
+                                   Vtransform=self.Vtransform,
+                                   Vstretching=self.Vstretching)
 
             # z_rho is positive relative to mean sea level but z is
             # 0 at the surface.
             # Transform z_rho to match convention of z.
-            z_rho -= np.asarray(zeta)[np.newaxis]
+            z_rho_e -= np.asarray(zeta)[np.newaxis]
+            z_rho = z_rho_e[:, yi1 - indy_e[0]:, xi1 - indx_e[0]:].copy()
 
             # Check for positive values in z_rho
             # if there are any, nan them out since they are above
@@ -1078,6 +1070,22 @@ class Reader(StructuredReader):
                 mask = getattr(self, mask_name)[imask]
             return mask, mask_name
 
+        def read_block(var, index, par):
+            """var[index], and for u/v the cells one west/south (or None)"""
+            axis = self._destagger_axis(par)
+            if axis is None:
+                return var[index], None
+            # Read both faces at once: one cell more along the staggered axis
+            if axis == 'x':
+                index_e, ax = index[:-1] + (indx_e,), -1
+                i_main, i_shift = indx - indx_e[0], indx_shift - indx_e[0]
+            else:
+                index_e, ax = index[:-2] + (indy_e, indx), -2
+                i_main, i_shift = indy - indy_e[0], indy_shift - indy_e[0]
+            block = np.asarray(var[index_e])
+            return np.take(block, i_main, axis=ax), np.take(block, i_shift, axis=ax)
+
+        raw_shifted = {}  # u/v at the other face, for de-staggering
         masks_store = {}  # To store masks for various grids
         s2z_inds_finalized = False
         for par in requested_variables:
@@ -1091,7 +1099,7 @@ class Reader(StructuredReader):
             elif var.ndim == 2:
                 variables[par] = var[ixy]
             elif var.ndim == 3:
-                variables[par] = var[itxy]
+                variables[par], raw_shifted[par] = read_block(var, itxy, par)
             elif var.ndim == 4:
                 # 4D fields F are read on sigma layers, then interpolated to
                 # z-levels by R = (1-A)*F[C-1] + A*F[C], where C and C-1 are
@@ -1127,7 +1135,7 @@ class Reader(StructuredReader):
                     if not np.isscalar(inds):
                         z_rho = z_rho[inds, :, :]
                     s2z_inds_finalized = True
-                variables[par] = var[itsxy]
+                variables[par], raw_shifted[par] = read_block(var, itsxy, par)
             else:
                 raise Exception('Wrong dimension of variable: ' +
                                 self.ROMS_variable_mapping[par])
@@ -1215,10 +1223,16 @@ class Reader(StructuredReader):
             variables[par] = np.ma.array(variables[par], ndmin=2, mask=False)
 
             # Mean of the two faces of each rho cell, ignoring land
-            if (self.destagger_velocity
-                    and par in ('x_sea_water_velocity', 'y_sea_water_velocity')):
+            if raw_shifted.get(par) is not None:
+                iy_s, ix_s = ((indy, indx_shift) if self._destagger_axis(par) == 'x'
+                              else (indy_shift, indx))
+                z_rho_shift = None
+                if not np.isscalar(inds):
+                    z_rho_shift = z_rho_e[np.asarray(inds)][
+                        :, iy_s - indy_e[0]][:, :, ix_s - indx_e[0]]
                 shifted = self._destagger_velocity_component(
-                    par, indxTime, indy, indx, inds, variables['z'])
+                    par, raw_shifted[par], indxTime, iy_s, ix_s, inds, z_rho_shift,
+                    variables['z'])
                 if shifted is not None:
                     original = np.ma.filled(variables[par], np.nan).astype(float)
                     stacked = np.stack([original, shifted])
