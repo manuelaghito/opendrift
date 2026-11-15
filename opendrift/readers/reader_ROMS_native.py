@@ -983,9 +983,11 @@ class Reader(StructuredReader):
         indx_shift = np.clip(indx - 1, 0, None)
         indy_shift = np.clip(indy - 1, 0, None)
 
-        # define indices
-        ixy = (indy,indx)
-        itxy = (indxTime,indy,indx)
+        # define indices; slices, since index arrays are much slower through xarray/dask
+        sx, sy = slice(xi1, xi2), slice(yi1, yi2)
+        sx_e, sy_e = slice(int(indx_e[0]), xi2), slice(int(indy_e[0]), yi2)
+        ixy = (sy, sx)
+        itxy = (indxTime, sy, sx)
         
         # use these same indices for all mask subsetting since if one is
         # 3D they all should be
@@ -1017,8 +1019,8 @@ class Reader(StructuredReader):
                 # Transform z_rho to match convention of z.
                 self.z_rho_tot -= np.asarray(zeta)[np.newaxis]
 
-            H = self.sea_floor_depth_below_sea_level[indy_e, indx_e]
-            zeta = self.zeta[(indxTime, indy_e, indx_e)]
+            H = self.sea_floor_depth_below_sea_level[sy_e, sx_e]
+            zeta = self.zeta[(indxTime, sy_e, sx_e)]
             z_rho_e = depth.sdepth(H, zeta, self.hc, self.Cs_r,
                                    Vtransform=self.Vtransform,
                                    Vstretching=self.Vstretching)
@@ -1060,8 +1062,11 @@ class Reader(StructuredReader):
                                           -z.min()) + self.verticalbuffer)
             variables['z'] = np.array(self.zlevels[zi1:zi2])
         
+        def sigma_index(inds):
+            return slice(inds.start, inds.stop) if isinstance(inds, range) else inds
+
         # define another set of indices
-        itsxy = (indxTime, inds, indy, indx)
+        itsxy = (indxTime, sigma_index(inds), sy, sx)
             
         def get_mask(mask_name, imask, masks_store):
             if mask_name in masks_store:
@@ -1077,10 +1082,10 @@ class Reader(StructuredReader):
                 return var[index], None
             # Read both faces at once: one cell more along the staggered axis
             if axis == 'x':
-                index_e, ax = index[:-1] + (indx_e,), -1
+                index_e, ax = index[:-1] + (sx_e,), -1
                 i_main, i_shift = indx - indx_e[0], indx_shift - indx_e[0]
             else:
-                index_e, ax = index[:-2] + (indy_e, indx), -2
+                index_e, ax = index[:-2] + (sy_e, sx), -2
                 i_main, i_shift = indy - indy_e[0], indy_shift - indy_e[0]
             block = np.asarray(var[index_e])
             return np.take(block, i_main, axis=ax), np.take(block, i_shift, axis=ax)
@@ -1131,7 +1136,7 @@ class Reader(StructuredReader):
                             si_bottom = int(min(si_bottom, max(0, C_bottom - 1)))
                             si_top = int(max(si_top, min(self.num_layers - 1, C_top)))
                             inds = range(si_bottom, si_top + 1)
-                        itsxy = (indxTime, inds, indy, indx)
+                        itsxy = (indxTime, sigma_index(inds), sy, sx)
                     if not np.isscalar(inds):
                         z_rho = z_rho[inds, :, :]
                     s2z_inds_finalized = True
