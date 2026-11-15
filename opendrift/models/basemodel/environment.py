@@ -725,8 +725,8 @@ class Environment(Timeable, Configurable):
                                               len(env_profiles_tmp['z'])))
                             z_ind = np.arange(
                                 np.minimum(
-                                    len(env_profiles['z']) - 1,
-                                    len(env_profiles_tmp['z']) - 1))
+                                    len(env_profiles['z']),
+                                    len(env_profiles_tmp['z'])))
                             # len(missing_indices) since 2 points might have been added and not removed
                             env_profiles_tmp[var] = np.ma.atleast_2d(
                                 env_profiles_tmp[var])
@@ -734,8 +734,10 @@ class Environment(Timeable, Configurable):
                                 np.ma.masked_invalid(env_profiles_tmp[var][z_ind,0:len(missing_indices)]).astype('float32')
                             # For profiles with different numbers of layers, we extrapolate
                             if env_profiles[var].shape[0] > 1:
-                                missingbottom = np.isnan(
-                                    env_profiles[var][-1, :])
+                                # Mask first: data under a mask is uninitialised
+                                missingbottom = np.ma.getmaskarray(
+                                    env_profiles[var][-1, :]) | np.isnan(
+                                    np.ma.getdata(env_profiles[var][-1, :]))
                                 env_profiles[var][
                                     -1, missingbottom] = env_profiles[var][
                                         -2, missingbottom]
