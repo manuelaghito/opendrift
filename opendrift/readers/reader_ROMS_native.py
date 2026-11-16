@@ -903,12 +903,22 @@ class Reader(StructuredReader):
         return {'u': 'x', 'ubar': 'x', 'v': 'y', 'vbar': 'y'}.get(varname)
 
     def _destagger_velocity_component(self, par, raw_shift, indxTime, indy_shift,
-                                      indx_shift, inds, z_rho_shift, z_target):
-        """u/v (or ubar/vbar) at the other face of each rho cell, land as NaN"""
+                                      indx_shift, inds, z_rho_shift, z_target, s2z=None):
+        """u/v (or ubar/vbar) at the other face of each rho cell, land as NaN
+
+        s2z: cached (A, C) at the shifted cells, else multi_zslice with z_rho_shift
+        """
         var = self.Dataset.variables[self.standard_name_mapping[par]]
         if var.ndim == 4 and len(np.atleast_1d(inds)) > 1:
-            # same sigma-to-z sequence as get_variables, at the shifted index
-            raw_shift, _, _, _, _ = depth.multi_zslice(raw_shift, z_rho_shift, z_target)
+            # same sigma-to-z as get_variables, at the shifted index
+            if s2z is not None:
+                A, C = s2z
+                F = np.asarray(raw_shift).reshape(raw_shift.shape[0], -1)
+                I = np.arange(F.shape[1])
+                raw_shift = ((1-A)*F[(C-1, I)] + A*F[(C, I)]).reshape(
+                    (A.shape[0],) + raw_shift.shape[1:])
+            else:
+                raw_shift, _, _, _, _ = depth.multi_zslice(raw_shift, z_rho_shift, z_target)
             raw_shift[raw_shift > 1e+9] = np.nan
 
         mask_attr = 'mask_u' if self._destagger_axis(par) == 'x' else 'mask_v'
@@ -1127,12 +1137,14 @@ class Reader(StructuredReader):
                             len(np.atleast_1d(inds)) > 1):
                         si_bottom, si_top = int(min(inds)), int(max(inds))
                         self._ensure_s2z_coefficients()
-                        C = np.asarray(self.s2z_C[zi1:zi2, yi1:yi2, xi1:xi2])
+                        # layers also cover the other u/v face (de-staggering)
+                        C_e = np.asarray(self.s2z_C[zi1:zi2, sy_e, sx_e])
+                        C = C_e[:, yi1 - indy_e[0]:, xi1 - indx_e[0]:]
                         # multi_zslice always returns finite clipped ints;
                         # this guard is only for a degenerate empty slice.
-                        if C.size:
-                            C_bottom = int(C.min())
-                            C_top = int(C.max())
+                        if C_e.size:
+                            C_bottom = int(C_e.min())
+                            C_top = int(C_e.max())
                             si_bottom = int(min(si_bottom, max(0, C_bottom - 1)))
                             si_top = int(max(si_top, min(self.num_layers - 1, C_top)))
                             inds = range(si_bottom, si_top + 1)
@@ -1231,13 +1243,20 @@ class Reader(StructuredReader):
             if raw_shifted.get(par) is not None:
                 iy_s, ix_s = ((indy, indx_shift) if self._destagger_axis(par) == 'x'
                               else (indy_shift, indx))
-                z_rho_shift = None
-                if not np.isscalar(inds):
+                z_rho_shift = s2z_shift = None
+                if (var.ndim == 4 and len(np.atleast_1d(inds)) > 1 and
+                        self.precalculate_s2z_coefficients is True):
+                    # same cached coefficients as the main face, at the shifted cells
+                    ixs = np.ix_(np.arange(zi1, zi2), iy_s, ix_s)
+                    C_s = np.asarray(self.s2z_C[ixs]).reshape(zi2 - zi1, -1) - si_bottom
+                    C_s[C_s < 1] = 1
+                    s2z_shift = (np.asarray(self.s2z_A[ixs]).reshape(zi2 - zi1, -1), C_s)
+                elif not np.isscalar(inds):
                     z_rho_shift = z_rho_e[np.asarray(inds)][
                         :, iy_s - indy_e[0]][:, :, ix_s - indx_e[0]]
                 shifted = self._destagger_velocity_component(
                     par, raw_shifted[par], indxTime, iy_s, ix_s, inds, z_rho_shift,
-                    variables['z'])
+                    variables['z'], s2z_shift)
                 if shifted is not None:
                     original = np.ma.filled(variables[par], np.nan).astype(float)
                     stacked = np.stack([original, shifted])
