@@ -16,7 +16,8 @@
 
 Only in lazy multi-file mode (time_buffer): each file of the open window is also
 opened with netCDF4, and a block at one time step is read from that file and
-decoded with xarray's own CF decoding, so values are the same as through the
+decoded with the same operations as xarray's CF decoding (or with xarray itself,
+for anything but plain packed integers), so values are the same as through the
 xarray Dataset. Everything else (grid, masks, static fields) still comes from
 the xarray Dataset.
 
@@ -41,11 +42,33 @@ from opendrift.readers import reader_ROMS_native
 class _FastVariable:
     """Time-dependent variable: integer time index -> read from the netCDF4 file"""
 
+    xarray_decoding = False  # True: always decode with xarray (for checking)
+
     def __init__(self, xrvar, name, parts, attrs):
         self._xr = xrvar
         self._name = name
         self._parts = parts  # (netCDF4 or zarr array, index in file) per window time index
         self._attrs = attrs
+        self._decoding = None
+
+    def _decode_params(self, raw):
+        """(dtype, fill values, scale_factor, add_offset) as xarray decodes raw, or False"""
+        if self._decoding is None:
+            self._decoding = False
+            a = self._attrs
+            if (raw.dtype.kind in 'iu' and '_Unsigned' not in a and
+                    ('scale_factor' in a or 'add_offset' in a)):
+                sample = xr.conventions.decode_cf_variable(
+                    self._name, xr.Variable(('x',), raw.ravel()[:1], dict(a)), decode_times=False)
+                e = sample.encoding
+                fills = [v for k in ('_FillValue', 'missing_value') if k in e
+                         for v in np.ravel(e[k]) if not np.isnan(v)]
+                scale_offset = [e.get(k) for k in ('scale_factor', 'add_offset')]
+                scale_offset = [np.asarray(v).item() if np.ndim(v) > 0 else v
+                                for v in scale_offset]
+                if sample.dtype.kind == 'f':
+                    self._decoding = (sample.dtype, fills, *scale_offset)
+        return self._decoding
 
     def __getattr__(self, attr):
         return getattr(self._xr, attr)
@@ -59,6 +82,19 @@ class _FastVariable:
             raw = src[(j,) + index[1:]]
         else:
             raw = src.oindex[(j,) + index[1:]]
+        raw = np.asarray(raw)
+        params = not self.xarray_decoding and self._decode_params(raw)
+        if params:
+            # as xarray: float(raw) with fill values -> NaN, then *= scale, += offset
+            dtype, fills, scale_factor, add_offset = params
+            data = raw.astype(dtype)
+            if scale_factor is not None:
+                data *= scale_factor
+            if add_offset is not None:
+                data += add_offset
+            for fv in fills:
+                data[raw == fv] = np.nan
+            return data
         dims = tuple(f'dim{i}' for i in range(np.ndim(raw)))
         decoded = xr.conventions.decode_cf_variable(
             self._name, xr.Variable(dims, raw, dict(self._attrs)), decode_times=False)
