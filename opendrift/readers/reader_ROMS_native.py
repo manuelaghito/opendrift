@@ -1030,7 +1030,15 @@ class Reader(StructuredReader):
                 self.z_rho_tot -= np.asarray(zeta)[np.newaxis]
 
             H = self.sea_floor_depth_below_sea_level[sy_e, sx_e]
-            zeta = self.zeta[(indxTime, sy_e, sx_e)]
+            zeta = np.asarray(self.zeta[(indxTime, sy_e, sx_e)])
+            # Element indices relative to the extracted subset
+            indx_el = np.clip(indx_el - indx.min(), 0, len(indx) - 1)
+            indy_el = np.clip(indy_el - indy.min(), 0, len(indy) - 1)
+            if self.precalculate_s2z_coefficients is True:
+                # The cached coefficients do the sigma-to-z; depths are only
+                # needed at the element columns, for the layer range below
+                jy, jx = indy_el + yi1 - indy_e[0], indx_el + xi1 - indx_e[0]
+                H, zeta = np.asarray(H)[jy, jx], zeta[jy, jx]
             z_rho_e = depth.sdepth(H, zeta, self.hc, self.Cs_r,
                                    Vtransform=self.Vtransform,
                                    Vstretching=self.Vstretching)
@@ -1038,8 +1046,12 @@ class Reader(StructuredReader):
             # z_rho is positive relative to mean sea level but z is
             # 0 at the surface.
             # Transform z_rho to match convention of z.
-            z_rho_e -= np.asarray(zeta)[np.newaxis]
-            z_rho = z_rho_e[:, yi1 - indy_e[0]:, xi1 - indx_e[0]:].copy()
+            z_rho_e -= zeta[np.newaxis]
+            if self.precalculate_s2z_coefficients is True:
+                z_rho = z_rho_e
+                z_rho_el = z_rho
+            else:
+                z_rho = z_rho_e[:, yi1 - indy_e[0]:, xi1 - indx_e[0]:].copy()
 
             # Check for positive values in z_rho
             # if there are any, nan them out since they are above
@@ -1049,17 +1061,16 @@ class Reader(StructuredReader):
                 logger.info(f'z_rho had positive values that are now nans.')
                 z_rho[z_rho>0] = np.nan
 
-            # Element indices must be relative to extracted subset
-            indx_el = np.clip(indx_el - indx.min(), 0, z_rho.shape[2]-1)
-            indy_el = np.clip(indy_el - indy.min(), 0, z_rho.shape[1]-1)
+            if self.precalculate_s2z_coefficients is not True:
+                z_rho_el = z_rho[:, indy_el, indx_el]
 
             # Loop to find the layers covering the requested z-values
             inds_min = 0
             inds_max = self.num_layers
             for i in range(self.num_layers):
-                if np.min(z-z_rho[i, indy_el, indx_el]) > 0:
+                if np.min(z-z_rho_el[i]) > 0:
                     inds_min = i
-                if np.max(z-z_rho[i, indy_el, indx_el]) > 0:
+                if np.max(z-z_rho_el[i]) > 0:
                     inds_max = i
             inds = range(np.maximum(0, inds_min-self.verticalbuffer),
                          np.minimum(self.num_layers,
@@ -1150,7 +1161,7 @@ class Reader(StructuredReader):
                             inds = range(si_bottom, si_top + 1)
                         itsxy = (indxTime, sigma_index(inds), sy, sx)
                     if not np.isscalar(inds):
-                        z_rho = z_rho[inds, :, :]
+                        z_rho = z_rho[inds]
                     s2z_inds_finalized = True
                 variables[par], raw_shifted[par] = read_block(var, itsxy, par)
             else:
@@ -1251,7 +1262,8 @@ class Reader(StructuredReader):
                     C_s = np.asarray(self.s2z_C[ixs]).reshape(zi2 - zi1, -1) - si_bottom
                     C_s[C_s < 1] = 1
                     s2z_shift = (np.asarray(self.s2z_A[ixs]).reshape(zi2 - zi1, -1), C_s)
-                elif not np.isscalar(inds):
+                elif (not np.isscalar(inds) and
+                        self.precalculate_s2z_coefficients is not True):
                     z_rho_shift = z_rho_e[np.asarray(inds)][
                         :, iy_s - indy_e[0]][:, :, ix_s - indx_e[0]]
                 shifted = self._destagger_velocity_component(
