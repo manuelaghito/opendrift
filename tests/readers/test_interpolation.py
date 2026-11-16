@@ -454,9 +454,9 @@ class TestInterpolation(unittest.TestCase):
                                   profiles_depth=[-30, 0])
         self.assertEqual(
             np.sum(~np.isfinite(env['x_sea_water_velocity'])), 0)
-        # Check that the arrays of the ReaderBlock have been filled in
+        # Check that the arrays of the ReaderBlock are left as they were
         self.assertEqual(
-            np.sum(~np.isfinite(b.data_dict['x_sea_water_velocity'])), 0)
+            np.sum(~np.isfinite(b.data_dict['x_sea_water_velocity'])), 1001)
 
         # Check that nearest interpolation contains some NaN values
         b2 = ReaderBlock(data.copy(), interpolation_horizontal='nearest')
