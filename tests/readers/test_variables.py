@@ -195,3 +195,13 @@ def test_mixed_layer_thickness_from_density(tmp_path):
     np.testing.assert_allclose(u, [.1, .1, .1, .5])  # currents not replaced where the layer is deeper than searched
     m, u = mld(activate=True, threshold=.5)
     np.testing.assert_allclose(m, [5 + 5 * .5 / (r35 - r34), 40, 100, 77], rtol=1e-5)
+
+    # inputs also requested directly, with elements outside the reader (as ChemicalDrift does)
+    r = reader_netCDF_CF_generic.Reader(str(tmp_path / 'ts.nc'))
+    r.activate_environment_mapping('ocean_mixed_layer_thickness_from_density')
+    v = ['ocean_mixed_layer_thickness', 'sea_water_temperature', 'sea_floor_depth_below_sea_level']
+    env, _ = r.get_variables_interpolated(v, profiles=['sea_water_temperature'], profiles_depth=100,
+                                          time=t0, lon=np.array([1, 2, 3.5, 8.]), lat=np.full(4, 60.),
+                                          z=np.full(4, -1.))
+    np.testing.assert_allclose(env['ocean_mixed_layer_thickness'][:3], [5 + 5 * .03 / (r35 - r34), 40, 100], rtol=1e-5)
+    assert np.ma.getmaskarray(env['ocean_mixed_layer_thickness'])[3]

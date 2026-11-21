@@ -843,7 +843,7 @@ class Variables(ReaderDomain):
 
         for v in derived:
             variables.remove(v)
-        variables.extend(list(set(derived_input)))
+        variables.extend([v for v in set(derived_input) if v not in variables])
         # Inputs that a derivation needs as vertical profiles
         profile_input = {p for em in self.environment_mappings.values()
                          if em['active'] and set(em['output']) & set(derived)
