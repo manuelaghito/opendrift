@@ -474,6 +474,35 @@ class ReaderDomain(Timeable):
 def land_binary_mask_from_ocean_depth(env,in_name=None,out_name=None):
     env['land_binary_mask'] = np.float32(env['sea_floor_depth_below_sea_level'] <= 0)
 
+def ocean_mixed_layer_thickness_from_density(env, in_name, out_name, env_profiles, profiles_depth,
+                                             threshold=0.03, reference_depth=1):
+    """First depth where potential density exceeds its value at reference_depth [m] by threshold
+    [kg/m3] (linear between profile levels), searched down to profiles_depth. Where not reached:
+    the seafloor if shallower, else the deepest level searched (the mixed layer is at least that deep)."""
+    from opendrift.models.physics_methods import PhysicsMethods
+    n = len(env['sea_water_temperature'])
+    depth = -np.asarray(env_profiles['z'], dtype=float)
+    order = np.argsort(depth)
+    if profiles_depth is not None:
+        order = order[depth[order] <= profiles_depth + 1e-6]
+    depth = depth[order]
+    T, S = [np.ma.filled(np.ma.asarray(env_profiles[v], dtype=float), np.nan)[order, :n]
+            for v in ('sea_water_temperature', 'sea_water_salinity')]
+    H = np.asarray(env['sea_floor_depth_below_sea_level'], dtype=float)[:n]
+    rho = PhysicsMethods.sea_water_density(T, S)
+    iref = np.argmin(np.abs(depth - reference_depth))
+    drho = rho - rho[iref]
+    valid = np.isfinite(rho) & (depth[:, None] >= depth[iref]) & (depth[:, None] <= H + 1e-6)
+    hit = valid & (drho > threshold)
+    found = hit.any(axis=0)
+    i = np.clip(hit.argmax(axis=0), 1, len(depth) - 1)
+    c = np.arange(n)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        f = (threshold - drho[i - 1, c]) / (drho[i, c] - drho[i - 1, c])
+    mld = np.where(found, depth[i - 1] + f * (depth[i] - depth[i - 1]), np.minimum(H, depth[-1]))
+    mld[~np.isfinite(rho[iref])] = np.nan
+    env['ocean_mixed_layer_thickness'] = mld
+
 def wind_from_speed_and_direction(env, in_name, out_name):
     if 'wind_from_direction' in env:
         wfd = env['wind_from_direction']
@@ -539,6 +568,12 @@ class Variables(ReaderDomain):
                 'input': ['sea_floor_depth_below_sea_level'],
                 'output': ['land_binary_mask'],
                 'method': land_binary_mask_from_ocean_depth,
+                'active': False},
+            'ocean_mixed_layer_thickness_from_density': {
+                'input': ['sea_water_temperature', 'sea_water_salinity', 'sea_floor_depth_below_sea_level'],
+                'profiles': ['sea_water_temperature', 'sea_water_salinity'],
+                'output': ['ocean_mixed_layer_thickness'],
+                'method': ocean_mixed_layer_thickness_from_density,
                 'active': False}
             }
 
@@ -585,12 +620,14 @@ class Variables(ReaderDomain):
         pass  # to be overriden by specific readers
 
 
-    def activate_environment_mapping(self, mapping_name):
+    def activate_environment_mapping(self, mapping_name, **kwargs):
+        '''kwargs are passed on to the mapping method, e.g. threshold=0.01'''
         if mapping_name not in self.environment_mappings:
             raise ValueError('Available environment mappings: ' + str(self.environment_mappings))
 
         em = self.environment_mappings[mapping_name]
         em['active'] = True
+        em['kwargs'] = kwargs
         if not all(item in em['output'] for item in self.variables) and \
                     all(item in self.variables for item in em['input']):
             for v in em['output']:
@@ -599,7 +636,7 @@ class Variables(ReaderDomain):
                     self.variables.append(v)
                     self.derived_variables[v] = em['input']
 
-    def __calculate_derived_environment_variables__(self, env):
+    def __calculate_derived_environment_variables__(self, env, env_profiles=None, profiles_depth=None):
         for m in self.environment_mappings:
             em = self.environment_mappings[m]
             if em['active'] is False:
@@ -608,7 +645,10 @@ class Variables(ReaderDomain):
                     all(item in env for item in em['input']):
                 for v in em['output']:
                     logger.debug('Calculating variable mapping: %s -> %s' % (em['input'], v))
-                    em['method'](env, em['input'], em['output'])
+                    if 'profiles' in em:
+                        em['method'](env, em['input'], em['output'], env_profiles, profiles_depth, **em.get('kwargs', {}))
+                    else:
+                        em['method'](env, em['input'], em['output'], **em.get('kwargs', {}))
 
     def set_buffer_size(self, max_speed, time_coverage=None):
         '''
@@ -804,13 +844,19 @@ class Variables(ReaderDomain):
         for v in derived:
             variables.remove(v)
         variables.extend(list(set(derived_input)))
+        # Inputs that a derivation needs as vertical profiles
+        profile_input = {p for em in self.environment_mappings.values()
+                         if em['active'] and set(em['output']) & set(derived)
+                         for p in em.get('profiles', [])}
+        if profile_input:
+            profiles = list(set(profiles or []) | profile_input)
 
         env, env_profiles = self._get_variables_interpolated_(
             variables, profiles, profiles_depth, time, x, y, z)
 
         # Calculate derived variables
         if len(derived) > 0:
-            self.__calculate_derived_environment_variables__(env)
+            self.__calculate_derived_environment_variables__(env, env_profiles, profiles_depth)
             variables.extend(derived)
 
         for e in [env, env_profiles]:

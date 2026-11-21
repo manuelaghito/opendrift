@@ -147,3 +147,51 @@ def test_lonlat_bounds_ob_tran(test_data_fake_wind_ob_tran):
     """
     bbox = test_data_fake_wind_ob_tran.lonlat_bounds()
     assert np.isclose(bbox, [-28.62, 44.38, 37.01, 72.88], rtol=0.1).all()
+
+def test_mixed_layer_thickness_from_density(tmp_path):
+    import xarray as xr
+    from opendrift.models.physics_methods import PhysicsMethods
+    depth = np.array([0, 1, 5, 10, 20, 50, 100, 200, 500.])
+    lon, lat = np.arange(0, 4.1, .5), np.arange(59, 61.1, .5)
+    T = np.full((len(depth), len(lon)), 10.)
+    S = np.full((len(depth), len(lon)), 35.)
+    S[depth <= 5, :4] = 34  # density step between 5 and 10 m west of 1.75E
+    H = np.where(lon < 1.75, 300., np.where(lon < 2.75, 40., 1000.))  # then mixed to the seafloor; then deeper than searched
+    b = lambda a: np.broadcast_to(a[None, :, None, :], (2, len(depth), len(lat), len(lon))).copy()
+    t0 = datetime(2023, 6, 1)
+    ds = xr.Dataset(
+        {'T': (('time', 'depth', 'lat', 'lon'), b(T), {'standard_name': 'sea_water_temperature'}),
+         'S': (('time', 'depth', 'lat', 'lon'), b(S), {'standard_name': 'sea_water_salinity'}),
+         'u': (('time', 'depth', 'lat', 'lon'), b(np.full_like(T, .1)), {'standard_name': 'x_sea_water_velocity'}),
+         'H': (('lat', 'lon'), np.broadcast_to(H, (len(lat), len(lon))).copy(),
+               {'standard_name': 'sea_floor_depth_below_sea_level'})},
+        coords={'time': [t0, t0 + timedelta(days=1)],
+                'depth': ('depth', depth, {'standard_name': 'depth', 'positive': 'down'}),
+                'lat': ('lat', lat, {'standard_name': 'latitude'}),
+                'lon': ('lon', lon, {'standard_name': 'longitude'})})
+    ds.to_netcdf(tmp_path / 'ts.nc')
+    background = reader_constant.Reader({'ocean_mixed_layer_thickness': 77, 'x_sea_water_velocity': .5,
+                                         'sea_water_temperature': 10, 'sea_water_salinity': 35})
+
+    def mld(activate, **kwargs):
+        r = reader_netCDF_CF_generic.Reader(str(tmp_path / 'ts.nc'))
+        if activate:
+            r.activate_environment_mapping('ocean_mixed_layer_thickness_from_density', **kwargs)
+        o = OceanDrift(loglevel=50)
+        o.add_reader([r, background])
+        o.set_config('general:use_auto_landmask', False)
+        o.set_config('environment:constant:land_binary_mask', 0)
+        o.set_config('drift:vertical_mixing', True)  # MLD is only needed with vertical mixing
+        o.set_config('drift:profiles_depth', 100)
+        o.seed_elements(lon=[1, 2, 3.5, 8], lat=[60] * 4, z=-1, time=t0)
+        o.run(steps=1, time_step=600)
+        return o.environment.ocean_mixed_layer_thickness, o.environment.x_sea_water_velocity
+
+    m, u = mld(activate=False)
+    np.testing.assert_array_equal(m, 77)
+    m, u = mld(activate=True)
+    r34, r35 = PhysicsMethods.sea_water_density(10, 34), PhysicsMethods.sea_water_density(10, 35)
+    np.testing.assert_allclose(m, [5 + 5 * .03 / (r35 - r34), 40, 100, 77], rtol=1e-5)
+    np.testing.assert_allclose(u, [.1, .1, .1, .5])  # currents not replaced where the layer is deeper than searched
+    m, u = mld(activate=True, threshold=.5)
+    np.testing.assert_allclose(m, [5 + 5 * .5 / (r35 - r34), 40, 100, 77], rtol=1e-5)
