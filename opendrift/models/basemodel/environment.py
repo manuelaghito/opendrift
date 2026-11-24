@@ -613,6 +613,8 @@ class Environment(Timeable, Configurable):
             missing_indices = np.array(range(len(lon)))
             # For each reader:
             for reader_name in reader_group:
+                if len(missing_indices) == 0:  # e.g. no positions at all
+                    break
                 logger.debug('Calling reader ' + reader_name)
                 logger.debug('----------------------------------------')
                 self.timer_start('main loop:readers:' +
