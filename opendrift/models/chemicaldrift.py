@@ -2992,6 +2992,9 @@ class ChemicalDrift(OceanDrift):
                 * time       (time) datetime64[ns]
 
             radius:      scalar, unit: meters
+            radius_type: 'cell' spreads elements uniformly over their whole source cell
+                         (radius ignored); 'adaptive' is a disk of radius capped at the
+                         cell's half-width; other values go to seed_elements
             lowerbound:  scalar, elements with lower values are discarded
         """
 
@@ -3060,6 +3063,17 @@ class ChemicalDrift(OceanDrift):
             f'{n_tot} elements (single seed_elements call)'
         )
         z = -np.random.uniform(0, 1, n_tot)
+
+        # 'cell': uniform over the whole source cell (regular lon/lat grid,
+        # coordinates at cell centres); radius is ignored.
+        if kwargs.get('radius_type') == 'cell':
+            for coord, pos in (('longitude', lon_e), ('latitude', lat_e)):
+                if steam[coord].size > 1:
+                    step = float(abs(steam[coord][1] - steam[coord][0]))
+                    pos += (np.random.random(n_tot) - 0.5) * step
+            radius = 0
+            kwargs = dict(kwargs)
+            kwargs['radius_type'] = 'uniform'
 
         # 'adaptive': hard-capped disk, radius also shrunk per element to
         # stay inside its own source cell (cos(lat)-scaled lon width).
