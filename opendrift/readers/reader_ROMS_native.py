@@ -1019,15 +1019,7 @@ class Reader(StructuredReader):
                     self.Dataset.variables['h'][:]
 
             if self.z_rho_tot is None:
-                Htot = self.sea_floor_depth_below_sea_level
-                zeta = self.zeta[indxTime]
-                self.z_rho_tot = depth.sdepth(Htot, zeta, self.hc, self.Cs_r,
-                                              Vtransform=self.Vtransform,
-					      Vstretching=self.Vstretching)
-                # z_rho is positive relative to mean sea level but z is
-                # 0 at the surface.
-                # Transform z_rho to match convention of z.
-                self.z_rho_tot -= np.asarray(zeta)[np.newaxis]
+                self._calculate_z_rho_tot(indxTime)
 
             H = self.sea_floor_depth_below_sea_level[sy_e, sx_e]
             zeta = np.asarray(self.zeta[(indxTime, sy_e, sx_e)])
@@ -1344,6 +1336,18 @@ class Reader(StructuredReader):
         else:
             return variables
 
+
+    def _calculate_z_rho_tot(self, indxTime):
+        """Whole-domain sigma layer depths at the sea surface of indxTime (the first fetch of this Dataset)"""
+        Htot = self.sea_floor_depth_below_sea_level
+        zeta = self.zeta[indxTime]
+        self.z_rho_tot = depth.sdepth(Htot, zeta, self.hc, self.Cs_r,
+                                      Vtransform=self.Vtransform,
+                                      Vstretching=self.Vstretching)
+        # z_rho is positive relative to mean sea level but z is
+        # 0 at the surface.
+        # Transform z_rho to match convention of z.
+        self.z_rho_tot -= np.asarray(zeta)[np.newaxis]
 
     def _ensure_s2z_coefficients(self):
         """Whole-domain s2z A,C from multi_zslice, once per Dataset."""
