@@ -108,6 +108,7 @@ class ChemicalDrift(OceanDrift):
         #'conc3': {'fallback': 1.e-3},
         'spm': {'fallback': 1},
         'ocean_mixed_layer_thickness': {'fallback': 50},
+        'sea_ice_area_fraction': {'fallback': 0, 'important': False},
         'active_sediment_layer_thickness': {'fallback': 0.03}, # TODO - currently not used, redundant with 'chemical:sediment:mixing_depth'
         'doc': {'fallback': 0.0},
         # Variables for dissociation
@@ -201,6 +202,9 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:volatilization': {'type': 'bool', 'default': False,
                 'description': 'Chemical is evaporated.',
                 'level': CONFIG_LEVEL_BASIC},
+            'chemical:transformations:volatilization_sea_ice': {'type': 'bool', 'default': False,
+                'description': 'Volatilization only through the open water: rate scaled by 1 - sea_ice_area_fraction.',
+                'level': CONFIG_LEVEL_ADVANCED},
             'chemical:transformations:degradation': {'type': 'bool', 'default': False,
                 'description': 'Chemical mass is degraded.',
                 'level': CONFIG_LEVEL_BASIC},
@@ -1830,6 +1834,8 @@ class ChemicalDrift(OceanDrift):
             #print('MTCvol        ',len(MTCvol),min(MTCvol),max(MTCvol),'cm/s')
 
             K_volatilization = 0.01 * MTCvol / Thick # (1/s)
+            if self.get_config('chemical:transformations:volatilization_sea_ice') is True:
+                K_volatilization = K_volatilization * (1 - np.clip(np.nan_to_num(self.environment.sea_ice_area_fraction[W]), 0, 1))
 
             #logger.debug('MTCa: %s cm/s' % MTCa)
             #logger.debug('MTCw: %s cm/s' % MTCw)
